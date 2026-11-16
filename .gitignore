@@ -1,0 +1,23 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+*.tsbuildinfo
+
+# environment: real secrets never go in git
+.env
+.env.*
+!.env.example
+
+# vercel
+.vercel
+
+# backups written by generate-project.js when it replaces a file
+/.steamlite-backup/
+
+# misc
+.DS_Store
+npm-debug.log*

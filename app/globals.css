@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+/* The app is dark only. This also darkens scrollbars and form controls. */
+:root {
+  color-scheme: dark;
+}
