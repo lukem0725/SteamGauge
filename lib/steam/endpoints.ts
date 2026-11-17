@@ -29,7 +29,24 @@ import {
   steamIdSchema,
 } from "@/lib/validation";
 
-import { cachedFetch, type CachedResult, type Validated } from "./cached-fetch";
+import { cachedFetch, peekCached, type CachedResult, type Validated } from "./cached-fetch";
+import { asReviewSummary, parseAppReviews, type ReviewSummary } from "./reviews";
+import {
+  parseCurrentPlayers,
+  parseStoreMeta,
+  parseTagList,
+  type CurrentPlayers,
+  type StoreMeta,
+  type SteamTagList,
+} from "./insights";
+import type { ItadAppPriceData } from "./composites";
+import { parseStoreSpecials } from "./specials";
+import type {
+  DealsPageData,
+  ItadHistoryData,
+  SteamWishlistIds,
+  WishlistViewData,
+} from "./composites";
 
 // =============================================================================
 // Shared
@@ -159,7 +176,7 @@ function validatePlayerSummary(raw: unknown, steamid: string): Validated<PlayerS
 /**
  * Keeps users.persona_name / avatar_url / profile_url current. This is an
  * UPDATE, not an upsert: it touches a row only if that SteamID has signed in
- * to SteamLite, and never creates one for a profile that was merely viewed.
+ * to SteamGauge, and never creates one for a profile that was merely viewed.
  */
 async function syncUserProfile(summary: PlayerSummary): Promise<void> {
   const { error } = await getSupabaseAdmin()
@@ -628,93 +645,10 @@ export async function getAppPrice(
 // Store specials  (Storefront featuredcategories)
 // =============================================================================
 
-export interface SaleItem {
-  readonly appid: number;
-  readonly name: string;
-  readonly headerImage: string | null;
-  /** ISO 4217 code, e.g. "USD". */
-  readonly currency: string;
-  /** Prices are in the currency's minor unit (cents). */
-  readonly originalPrice: number;
-  readonly finalPrice: number;
-  /** 1 to 100. */
-  readonly discountPercent: number;
-  /** When the discount ends, if Steam says. */
-  readonly discountEndsAt: string | null;
-}
-
-export interface StoreSpecials {
-  /** Discounted games Steam is currently featuring, in Steam's order, no duplicates. */
-  readonly items: readonly SaleItem[];
-}
-
-/** Steam's item type for a single app. Packages (1) and bundles (2) are skipped. */
-const FEATURED_ITEM_TYPE_APP = 0;
-const MAX_SALE_ITEMS = 30;
-
-const rawFeaturedItemSchema = z.object({
-  id: z.number().int().positive(),
-  type: z.number().int().optional().catch(undefined),
-  name: z.string().min(1).max(512),
-  discounted: z.boolean().optional().catch(undefined),
-  discount_percent: z.number().int().min(0).max(100).optional().catch(undefined),
-  original_price: z.number().int().nonnegative().nullable().optional().catch(undefined),
-  final_price: z.number().int().nonnegative(),
-  currency: z.string().regex(/^[A-Z]{3}$/),
-  header_image: httpsUrlOrNull,
-  large_capsule_image: httpsUrlOrNull,
-  discount_expiration: optionalCount,
-});
-
-const rawFeaturedCategorySchema = z
-  .object({ items: z.array(z.unknown()) })
-  .optional()
-  .catch(undefined);
-
-const rawFeaturedCategoriesSchema = z.object({
-  specials: rawFeaturedCategorySchema,
-  top_sellers: rawFeaturedCategorySchema,
-});
-
-function validateStoreSpecials(raw: unknown): Validated<StoreSpecials> {
-  const { specials, top_sellers } = rawFeaturedCategoriesSchema.parse(raw);
-
-  // If neither category is present this is not the response we asked for.
-  if (!specials && !top_sellers) {
-    throw new Error("Storefront response has no specials or top_sellers category");
-  }
-
-  // "Trending and discounted": Steam's specials first, then any top seller
-  // that happens to be on sale.
-  const seen = new Set<number>();
-  const items: SaleItem[] = [];
-  for (const entry of [...(specials?.items ?? []), ...(top_sellers?.items ?? [])]) {
-    if (items.length >= MAX_SALE_ITEMS) break;
-    const parsed = rawFeaturedItemSchema.safeParse(entry);
-    if (!parsed.success) continue;
-    const item = parsed.data;
-
-    const original = item.original_price ?? 0;
-    const percent = item.discount_percent ?? 0;
-    const isApp = item.type === undefined || item.type === FEATURED_ITEM_TYPE_APP;
-    const isOnSale = percent > 0 && original > item.final_price;
-    if (!isApp || !isOnSale || item.id > 9_999_999 || seen.has(item.id)) continue;
-
-    seen.add(item.id);
-    items.push({
-      appid: item.id,
-      name: item.name.trim(),
-      headerImage: item.header_image ?? item.large_capsule_image,
-      currency: item.currency,
-      originalPrice: original,
-      finalPrice: item.final_price,
-      discountPercent: percent,
-      discountEndsAt: unixSecondsToIso(item.discount_expiration),
-    });
-  }
-
-  return { status: "ok", data: { items } };
-}
+// SaleItem, StoreSpecials and the parser live in ./specials so the deals
+// composites can use them without importing this module.
+export type { SaleItem, StoreSpecials } from "./specials";
+import type { StoreSpecials } from "./specials";
 
 /**
  * Discounted games Steam is featuring right now: its "Specials" list plus any
@@ -734,7 +668,261 @@ export async function getStoreSpecials(
   return cachedFetch({
     resource: "storeSpecials",
     keyArgs: [cc],
-    validate: validateStoreSpecials,
+    validate: parseStoreSpecials,
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+// =============================================================================
+// Composite resources (lib/steam/composites.ts)
+// =============================================================================
+
+export type {
+  DealRecord,
+  DealsPageData,
+  ItadHistoryData,
+  SteamWishlistEntry,
+  SteamWishlistIds,
+  WishlistLows,
+  WishlistViewData,
+} from "./composites";
+export { SALE_PAGE_SIZE, SALE_TOP_SELLERS, STEAM_WISHLIST_LIMIT } from "./composites";
+
+/**
+ * Composite refreshes validate every upstream response themselves and return
+ * a finished `Validated` result, so the engine's validate step only confirms
+ * the envelope.
+ */
+function compositeResult<T>(raw: unknown): Validated<T> {
+  const status = (raw as { status?: unknown } | null)?.status;
+  if (status === "private" || status === "not_found") return { status };
+  if (status === "ok" && typeof (raw as { data?: unknown }).data === "object") {
+    return raw as Validated<T>;
+  }
+  throw new Error("composite refresh returned an unexpected shape");
+}
+
+/**
+ * One page (200) of Steam's discounted top sellers, from Steam's own store
+ * query, with Steam ratings, release dates, sale end times and (with an ITAD
+ * key) historical lows and the cheapest other store. Shared by all users,
+ * fresh for an hour.
+ */
+export async function getSalePage(
+  page: number,
+  countryCode: string = DEFAULT_COUNTRY_CODE,
+  context: EndpointContext = {},
+): Promise<CachedResult<DealsPageData>> {
+  if (!Number.isInteger(page) || page < 0 || page > 9) throw new RangeError("page out of range");
+  const cc = countryCodeSchema.parse(countryCode);
+  return cachedFetch({
+    resource: "salePage",
+    keyArgs: [cc, page],
+    validate: compositeResult<DealsPageData>,
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+/** Steam's featured specials with the same data. Used only if the sale query fails. */
+export async function getDealsFallback(
+  countryCode: string = DEFAULT_COUNTRY_CODE,
+  context: EndpointContext = {},
+): Promise<CachedResult<DealsPageData>> {
+  const cc = countryCodeSchema.parse(countryCode);
+  return cachedFetch({
+    resource: "dealsFallback",
+    keyArgs: [cc],
+    validate: compositeResult<DealsPageData>,
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+/** The appids on a player's public Steam wishlist. Requires a session. */
+export async function getSteamWishlistIds(
+  steamid: string,
+  context: EndpointContext = {},
+): Promise<CachedResult<SteamWishlistIds>> {
+  const id = steamIdSchema.parse(steamid);
+  return cachedFetch({
+    resource: "steamWishlistIds",
+    keyArgs: [id],
+    validate: compositeResult<SteamWishlistIds>,
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+/**
+ * The Steam wishlist plus locally watched apps, with store data and (when an
+ * ITAD key is configured) historical lows. Requires a session.
+ *
+ * @param localAppids  Appids on the SteamGauge watchlist. Sorted here, so the
+ *                     same set always maps to the same cache entry.
+ */
+export async function getWishlistView(
+  steamid: string,
+  localAppids: readonly number[],
+  context: EndpointContext = {},
+  /** Runs after a live refresh (never on a cache hit). Failures are logged, not thrown. */
+  onRefreshed?: (data: WishlistViewData) => Promise<void>,
+): Promise<CachedResult<WishlistViewData>> {
+  const id = steamIdSchema.parse(steamid);
+  const csv = [...new Set(localAppids.map((appid) => appIdSchema.parse(appid)))]
+    .sort((a, b) => a - b)
+    .join(",");
+  return cachedFetch({
+    resource: "wishlistView",
+    keyArgs: [id, csv],
+    validate: compositeResult<WishlistViewData>,
+    onRefreshed,
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+/**
+ * Multi-year Steam price history for one app from IsThereAnyDeal, one point
+ * per day with a price change. Shared by all users, fresh for 12 hours.
+ * Requires ITAD_API_KEY.
+ *
+ * Result statuses: "ok", or "not_found" when ITAD does not know the app.
+ */
+export async function getItadHistory(
+  appid: number | string,
+  countryCode: string = DEFAULT_COUNTRY_CODE,
+  context: EndpointContext = {},
+): Promise<CachedResult<ItadHistoryData>> {
+  const id = appIdSchema.parse(appid);
+  const cc = countryCodeSchema.parse(countryCode);
+  return cachedFetch({
+    resource: "itadHistory",
+    keyArgs: [id, cc],
+    validate: compositeResult<ItadHistoryData>,
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+// =============================================================================
+// Review summaries  (IUserReviewsService/GetAppReviews)
+// =============================================================================
+
+export type { ReviewSummary } from "./reviews";
+
+/**
+ * Steam's review totals for one app: count and share positive. Shared by all
+ * users, fresh for 3 days. Used only for apps where the batched GetItems
+ * call returned no review summary.
+ *
+ * Result statuses: "ok", or "not_found" for an appid Steam does not know.
+ */
+export async function getAppReviews(
+  appid: number | string,
+  context: EndpointContext = {},
+): Promise<CachedResult<ReviewSummary>> {
+  const id = appIdSchema.parse(appid);
+  return cachedFetch({
+    resource: "appReviews",
+    keyArgs: [id],
+    validate: (raw) => parseAppReviews(raw, id),
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+/**
+ * Cached review summaries for many apps in a few database queries, with no
+ * Steam calls. Apps with nothing usable in the cache are absent from the map.
+ */
+export async function peekAppReviews(
+  appids: readonly number[],
+): Promise<Map<number, ReviewSummary>> {
+  const ids = [...new Set(appids.map((appid) => appIdSchema.parse(appid)))];
+  const results = await peekCached("appReviews", ids.map((id) => [id] as const));
+  const found = new Map<number, ReviewSummary>();
+  results.forEach((result, index) => {
+    if (result?.status !== "ok") return;
+    const summary = asReviewSummary(result.data);
+    if (summary && summary.appid === ids[index]) found.set(summary.appid, summary);
+  });
+  return found;
+}
+
+// =============================================================================
+// Game facts for expanded Deals rows and Wishlist cards
+// =============================================================================
+
+export type { CurrentPlayers, StoreMeta, SteamTagList } from "./insights";
+export type { ItadAppPriceData, ItadStorePrice } from "./composites";
+
+/** Live concurrent players. Shared by all users, fresh for 10 minutes. */
+export async function getCurrentPlayers(
+  appid: number | string,
+  context: EndpointContext = {},
+): Promise<CachedResult<CurrentPlayers>> {
+  const id = appIdSchema.parse(appid);
+  return cachedFetch({
+    resource: "currentPlayers",
+    keyArgs: [id],
+    validate: (raw) => parseCurrentPlayers(raw, id),
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+/** Developers, publishers, franchises and tag ids from GetItems. Fresh for a day. */
+export async function getAppStoreMeta(
+  appid: number | string,
+  countryCode: string = DEFAULT_COUNTRY_CODE,
+  context: EndpointContext = {},
+): Promise<CachedResult<StoreMeta>> {
+  const id = appIdSchema.parse(appid);
+  const cc = countryCodeSchema.parse(countryCode);
+  return cachedFetch({
+    resource: "appStoreMeta",
+    keyArgs: [id, cc],
+    validate: (raw) => parseStoreMeta(raw, id),
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+/** Every Steam tag's name, in English. One shared entry, fresh for a week. */
+export async function getSteamTags(context: EndpointContext = {}): Promise<CachedResult<SteamTagList>> {
+  return cachedFetch({
+    resource: "steamTags",
+    keyArgs: ["english"],
+    validate: parseTagList,
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+/** One game's current price at every store ITAD tracks, with lows. Requires ITAD_API_KEY. */
+export async function getItadAppPrices(
+  appid: number | string,
+  countryCode: string = DEFAULT_COUNTRY_CODE,
+  context: EndpointContext = {},
+): Promise<CachedResult<ItadAppPriceData>> {
+  const id = appIdSchema.parse(appid);
+  const cc = countryCodeSchema.parse(countryCode);
+  return cachedFetch({
+    resource: "itadAppPrices",
+    keyArgs: [id, cc],
+    validate: compositeResult<ItadAppPriceData>,
     session: context.session,
     waitUntil: context.waitUntil,
     priority: context.priority,

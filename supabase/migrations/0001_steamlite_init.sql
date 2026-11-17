@@ -1,5 +1,5 @@
 -- =============================================================================
--- SteamLite: database initialization (run once in the Supabase SQL Editor)
+-- SteamGauge: database initialization (run once in the Supabase SQL Editor)
 -- =============================================================================
 -- SECURITY MODEL: NO BROWSER RLS POLICIES ARE NEEDED, AND NONE ARE DEFINED.
 --
@@ -81,7 +81,7 @@ create table if not exists public.api_cache (
   stale_until    timestamptz not null,
   lease_until    timestamptz not null default 'epoch',
   -- Set for player:* keys so "delete my data" can find them. Deliberately NOT
-  -- a foreign key: cached players (e.g. friends) are often not SteamLite users.
+  -- a foreign key: cached players (e.g. friends) are often not SteamGauge users.
   owner_steamid  text
                  check (owner_steamid is null or owner_steamid ~ '^7656119[0-9]{10}$'),
   check (stale_until >= fresh_until)

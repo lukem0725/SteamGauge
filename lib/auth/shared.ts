@@ -7,7 +7,7 @@
  *
  * Required environment variables:
  *   APP_ORIGIN      Public origin of this deployment, for example
- *                   https://steamlite.example.com. No path, no trailing slash.
+ *                   https://steamgauge.example.com. No path, no trailing slash.
  *                   It is configured, never taken from the Host header, so a
  *                   forged Host cannot change where Steam sends the user back.
  *   SESSION_SECRET  32+ random bytes. Used here as the HMAC key that turns a

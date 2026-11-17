@@ -1,7 +1,7 @@
 -- =============================================================================
--- SteamLite migration 0002: price history (run once in the Supabase SQL Editor)
+-- SteamGauge migration 0002: price history (run once in the Supabase SQL Editor)
 -- =============================================================================
--- Steam does not publish historical prices, so SteamLite records its own: one
+-- Steam does not publish historical prices, so SteamGauge records its own: one
 -- row per app, per country, per UTC day, holding the LOWEST price it observed
 -- that day. History therefore begins on the day this migration is applied.
 --

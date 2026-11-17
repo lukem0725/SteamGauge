@@ -15,7 +15,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { POST_LOGIN_PATH, SESSION_COOKIE } from "@/lib/auth/shared";
 
 export const metadata: Metadata = {
-  title: "SteamLite",
+  title: "SteamGauge",
   description: "See your Steam library, backlog, deals and price drops at a glance.",
 };
 
@@ -55,7 +55,7 @@ export default async function LandingPage({
     <div className="flex min-h-dvh flex-col bg-zinc-950 text-zinc-100 antialiased">
       <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-12">
         <p className="text-2xl font-semibold tracking-tight text-zinc-50">
-          Steam<span className="text-emerald-400">Lite</span>
+          Steam<span className="text-emerald-400">Gauge</span>
         </p>
         <h1 className="mt-6 text-3xl font-semibold leading-tight tracking-tight text-zinc-50">
           Your Steam library, at a glance.
@@ -83,12 +83,12 @@ export default async function LandingPage({
           Sign in through Steam
         </a>
         <p className="mt-3 text-sm leading-relaxed text-zinc-500">
-          You sign in on Steam&rsquo;s own site. SteamLite never sees your password.
+          You sign in on Steam&rsquo;s own site. SteamGauge never sees your password.
         </p>
       </main>
 
       <footer className="px-4 pb-6 text-center text-xs leading-relaxed text-zinc-600">
-        SteamLite is not affiliated with Valve.{" "}
+        SteamGauge is not affiliated with Valve.{" "}
         <a
           href="https://steampowered.com"
           target="_blank"

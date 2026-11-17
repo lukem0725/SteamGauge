@@ -255,7 +255,7 @@ function describeError(
     case "quota_exhausted":
       return {
         title: "We have reached our Steam request limit",
-        body: `SteamLite limits how often it calls Steam, and that budget is used up for now.${wait}`,
+        body: `SteamGauge limits how often it calls Steam, and that budget is used up for now.${wait}`,
       };
     case "throttled":
     case "upstream_unavailable":
@@ -267,7 +267,7 @@ function describeError(
     case "network":
       return {
         title: "You appear to be offline",
-        body: "We could not reach SteamLite. Check your connection and try again.",
+        body: "We could not reach SteamGauge. Check your connection and try again.",
       };
     default:
       return {

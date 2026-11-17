@@ -18,6 +18,7 @@
  * at build time, so no server code reaches the browser bundle.
  */
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 
 import {
   DataAgeTicker,
@@ -30,6 +31,7 @@ import {
   secondaryButton,
   useInViewOnce,
 } from "@/components/ui-kit";
+import { pageContainer } from "@/components/layout-width";
 import { apiGet } from "@/lib/api/client";
 import type { SessionUser } from "@/lib/auth/session";
 import type { CacheMeta } from "@/lib/steam/cached-fetch";
@@ -43,8 +45,8 @@ export { simulatedHoursToBeat };
 // Configuration
 // =============================================================================
 
-/** At most this many backlog cards are rendered, and so at most this many price lookups. */
-const BACKLOG_DECK_LIMIT = 24;
+/** Games rendered per "Show more" step. Backlog cards each make one lazy price lookup. */
+const PAGE_STEP = 24;
 
 /** After a stale answer, re-check this many times for the refreshed data. */
 const STALE_RECHECK_LIMIT = 2;
@@ -65,7 +67,19 @@ export function DashboardView({ user }: DashboardViewProps) {
   return <Dashboard user={user} />;
 }
 
+/**
+ * Which slice of the library the list shows. Chosen by clicking one of the
+ * three stat cards in the Library Health banner.
+ *
+ *   all       every owned game, A to Z
+ *   playtime  every owned game, most played first
+ *   backlog   games with exactly 0 minutes played, A to Z (the default)
+ */
+export type LibraryFilter = "all" | "playtime" | "backlog";
+
 function Dashboard({ user }: DashboardViewProps) {
+  const [filter, setFilter] = useState<LibraryFilter>("backlog");
+
   const library = useQuery({
     queryKey: ["player", user.steamid, "games"],
     queryFn: ({ signal }) =>
@@ -86,7 +100,7 @@ function Dashboard({ user }: DashboardViewProps) {
 
   return (
     <div className="bg-zinc-950 text-zinc-100 antialiased">
-      <div className="mx-auto w-full max-w-5xl px-4 pb-12 pt-5 sm:px-6 lg:px-8">
+      <div className={pageContainer}>
         <Header user={user} meta={result?.meta ?? null} isFetching={library.isFetching} />
 
         <main className="mt-6 space-y-8">
@@ -103,8 +117,12 @@ function Dashboard({ user }: DashboardViewProps) {
               <EmptyLibraryState />
             ) : (
               <>
-                <LibraryHealthBanner library={result.data} />
-                <BacklogGuardianPanel games={result.data.games} />
+                <LibraryHealthBanner
+                  library={result.data}
+                  selected={filter}
+                  onSelect={setFilter}
+                />
+                <LibraryPanel games={result.data.games} filter={filter} />
               </>
             )
           ) : (
@@ -167,7 +185,15 @@ function Header({
 
 const wholeNumber = new Intl.NumberFormat("en-US");
 
-function LibraryHealthBanner({ library }: { library: OwnedGames }) {
+function LibraryHealthBanner({
+  library,
+  selected,
+  onSelect,
+}: {
+  library: OwnedGames;
+  selected: LibraryFilter;
+  onSelect: (filter: LibraryFilter) => void;
+}) {
   const backlog = library.games.filter(isUnplayed).length;
   const played = library.gameCount - backlog;
   const playedPercent = library.gameCount > 0 ? Math.round((played / library.gameCount) * 100) : 0;
@@ -215,36 +241,122 @@ function LibraryHealthBanner({ library }: { library: OwnedGames }) {
           />
         </div>
 
-        <dl className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <Stat label="Games owned" value={wholeNumber.format(library.gameCount)} />
-          <Stat label="Lifetime hours" value={wholeNumber.format(hours)} />
-          <div className="col-span-2 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 sm:col-span-1">
-            <dt className="text-xs font-medium uppercase tracking-wider text-amber-300">
-              Unplayed backlog
-            </dt>
-            <dd className="mt-1 flex items-baseline gap-2">
-              <span className="text-4xl font-bold tabular-nums tracking-tight text-amber-200">
-                {wholeNumber.format(backlog)}
-              </span>
-              <span className="text-sm text-amber-200/70">
-                {backlog === 1 ? "game" : "games"} at 0 hours
-              </span>
-            </dd>
-          </div>
-        </dl>
+        {/* The three cards are toggle buttons that choose what the list below shows. */}
+        <div
+          role="group"
+          aria-label="Choose which games to list"
+          className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3"
+        >
+          <StatButton
+            filter="all"
+            selected={selected}
+            onSelect={onSelect}
+            label="Games owned"
+            value={wholeNumber.format(library.gameCount)}
+            hint="All games, A to Z"
+          />
+          <StatButton
+            filter="playtime"
+            selected={selected}
+            onSelect={onSelect}
+            label="Lifetime hours"
+            value={wholeNumber.format(hours)}
+            hint="Most played first"
+          />
+          <StatButton
+            filter="backlog"
+            selected={selected}
+            onSelect={onSelect}
+            label="Unplayed backlog"
+            value={wholeNumber.format(backlog)}
+            unit={`${backlog === 1 ? "game" : "games"} at 0 hours`}
+            hint="Never played, A to Z"
+            accent
+            className="col-span-2 sm:col-span-1"
+          />
+        </div>
       </div>
     </section>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+/**
+ * One stat card, working as a toggle button. Its pressed state is exposed
+ * with aria-pressed and shown with a ring and a "Showing" marker, never by
+ * colour alone.
+ */
+function StatButton({
+  filter,
+  selected,
+  onSelect,
+  label,
+  value,
+  unit,
+  hint,
+  accent = false,
+  className = "",
+}: {
+  filter: LibraryFilter;
+  selected: LibraryFilter;
+  onSelect: (filter: LibraryFilter) => void;
+  label: string;
+  value: string;
+  unit?: string;
+  hint: string;
+  accent?: boolean;
+  className?: string;
+}) {
+  const active = filter === selected;
+  const tone = accent
+    ? active
+      ? "border-amber-300 bg-amber-400/15 ring-2 ring-amber-300/60"
+      : "border-amber-400/30 bg-amber-400/10 hover:border-amber-300/60 hover:bg-amber-400/15"
+    : active
+      ? "border-emerald-400 bg-zinc-800/80 ring-2 ring-emerald-400/50"
+      : "border-zinc-800 bg-zinc-900/60 hover:border-zinc-600 hover:bg-zinc-800/60";
+
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
-      <dt className="text-xs font-medium uppercase tracking-wider text-zinc-500">{label}</dt>
-      <dd className="mt-1 text-3xl font-semibold tabular-nums tracking-tight text-zinc-50">
-        {value}
-      </dd>
-    </div>
+    <button
+      type="button"
+      aria-pressed={active}
+      aria-controls="library-list"
+      onClick={() => onSelect(filter)}
+      className={`group relative rounded-2xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 ${tone} ${className}`}
+    >
+      <span
+        className={`flex items-center justify-between gap-2 text-xs font-medium uppercase tracking-wider ${
+          accent ? "text-amber-300" : "text-zinc-500"
+        }`}
+      >
+        {label}
+        {active ? (
+          <span
+            className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold normal-case tracking-normal ${
+              accent ? "bg-amber-300 text-zinc-950" : "bg-emerald-400 text-zinc-950"
+            }`}
+          >
+            Showing
+          </span>
+        ) : null}
+      </span>
+      <span className="mt-1 flex items-baseline gap-2">
+        <span
+          className={`tabular-nums tracking-tight ${
+            accent ? "text-4xl font-bold text-amber-200" : "text-3xl font-semibold text-zinc-50"
+          }`}
+        >
+          {value}
+        </span>
+        {unit ? <span className="text-sm text-amber-200/70">{unit}</span> : null}
+      </span>
+      <span
+        className={`mt-2 block text-xs ${
+          active ? "text-zinc-300" : "text-zinc-500 group-hover:text-zinc-400"
+        }`}
+      >
+        {hint}
+      </span>
+    </button>
   );
 }
 
@@ -254,32 +366,81 @@ function isUnplayed(game: OwnedGame): boolean {
 }
 
 // =============================================================================
-// Backlog Guardian panel
+// Library list (driven by the stat cards)
 // =============================================================================
 
-function BacklogGuardianPanel({ games }: { games: readonly OwnedGame[] }) {
-  const backlog = games.filter(isUnplayed).sort((a, b) => a.name.localeCompare(b.name));
-  const shown = backlog.slice(0, BACKLOG_DECK_LIMIT);
+const byName = (a: OwnedGame, b: OwnedGame) =>
+  a.name.localeCompare(b.name, "en", { sensitivity: "base" });
+
+/** The games, title and wording for each filter. Exported for tests. */
+export function selectLibrary(games: readonly OwnedGame[], filter: LibraryFilter) {
+  switch (filter) {
+    case "all":
+      return {
+        games: [...games].sort(byName),
+        eyebrow: "Library",
+        title: "All games, A to Z",
+        noun: "games",
+      };
+    case "playtime":
+      return {
+        games: [...games].sort((a, b) => b.playtimeMinutes - a.playtimeMinutes || byName(a, b)),
+        eyebrow: "Library",
+        title: "Most played",
+        noun: "games",
+      };
+    case "backlog":
+      return {
+        games: games.filter(isUnplayed).sort(byName),
+        eyebrow: "Backlog guardian",
+        title: "Owned, never played",
+        noun: "unplayed games",
+      };
+  }
+}
+
+function LibraryPanel({ games, filter }: { games: readonly OwnedGame[]; filter: LibraryFilter }) {
+  const view = selectLibrary(games, filter);
+  const [limit, setLimit] = useState(PAGE_STEP);
+
+  // A new filter starts again from the top of its list.
+  const [shownFilter, setShownFilter] = useState(filter);
+  if (shownFilter !== filter) {
+    setShownFilter(filter);
+    setLimit(PAGE_STEP);
+  }
+
+  const shown = view.games.slice(0, limit);
+  const total = view.games.length;
+  const isBacklog = filter === "backlog";
 
   return (
-    <section aria-labelledby="backlog-heading">
+    <section id="library-list" aria-labelledby="library-list-heading">
       <div className="flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-medium uppercase tracking-wider text-amber-400">
-            Backlog guardian
+          <p
+            className={`text-xs font-medium uppercase tracking-wider ${
+              isBacklog ? "text-amber-400" : "text-emerald-400"
+            }`}
+          >
+            {view.eyebrow}
           </p>
-          <h2 id="backlog-heading" className="mt-1 text-lg font-semibold text-zinc-50">
-            Owned, never played
+          <h2 id="library-list-heading" className="mt-1 text-lg font-semibold text-zinc-50">
+            {view.title}
           </h2>
         </div>
-        {backlog.length > shown.length ? (
-          <p className="shrink-0 text-xs text-zinc-500">
-            Showing {shown.length} of {wholeNumber.format(backlog.length)}
-          </p>
-        ) : null}
+        <p aria-live="polite" className="shrink-0 text-right text-xs text-zinc-500">
+          <span className="font-semibold tabular-nums text-zinc-300">
+            {wholeNumber.format(total)}
+          </span>{" "}
+          {total === 1 ? view.noun.replace(/s$/, "") : view.noun}
+          {total > shown.length ? (
+            <span className="block">Showing {wholeNumber.format(shown.length)}</span>
+          ) : null}
+        </p>
       </div>
 
-      {backlog.length === 0 ? (
+      {total === 0 ? (
         <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-400/5 p-6 text-center">
           <p className="text-base font-medium text-emerald-200">Backlog cleared</p>
           <p className="mt-1 text-sm text-zinc-400">
@@ -288,22 +449,118 @@ function BacklogGuardianPanel({ games }: { games: readonly OwnedGame[] }) {
         </div>
       ) : (
         <>
-          {/* Horizontal deck. Negative margin lets cards bleed to the screen edge on phones. */}
-          <ul
-            aria-label="Unplayed games"
-            className="-mx-4 mt-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8"
-          >
-            {shown.map((game) => (
-              <BacklogCard key={game.appid} game={game} />
-            ))}
-          </ul>
-          <p className="text-xs leading-relaxed text-zinc-500">
-            Price is the current US store price, not what you paid. Length is a simulated
-            placeholder, not real completion data.
-          </p>
+          {isBacklog ? (
+            <ul
+              aria-label={view.title}
+              className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
+            >
+              {shown.map((game) => (
+                <BacklogCard key={game.appid} game={game} />
+              ))}
+            </ul>
+          ) : (
+            <ol
+              aria-label={view.title}
+              className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4"
+            >
+              {shown.map((game, index) => (
+                <GameRow
+                  key={game.appid}
+                  game={game}
+                  rank={filter === "playtime" ? index + 1 : null}
+                />
+              ))}
+            </ol>
+          )}
+
+          {total > shown.length ? (
+            <div className="mt-4 flex justify-center">
+              <button
+                type="button"
+                onClick={() => setLimit((current) => current + PAGE_STEP)}
+                className={secondaryButton}
+              >
+                Show {Math.min(PAGE_STEP, total - shown.length)} more
+                <span className="sr-only"> of {view.title}</span>
+              </button>
+            </div>
+          ) : null}
+
+          {isBacklog ? (
+            <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+              Price is the current US store price, not what you paid. Length is a simulated
+              placeholder, not real completion data.
+            </p>
+          ) : null}
         </>
       )}
     </section>
+  );
+}
+
+const hoursFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
+
+function formatPlaytime(minutes: number): string {
+  if (minutes === 0) return "Never played";
+  if (minutes < 60) return `${minutes} min`;
+  return `${hoursFormat.format(minutes / 60)} h`;
+}
+
+/** A compact row for the "all" and "playtime" lists. No network requests. */
+function GameRow({ game, rank }: { game: OwnedGame; rank: number | null }) {
+  return (
+    <li className="relative flex min-h-14 items-center gap-3 rounded-xl border border-zinc-800 bg-[#18181c] px-3 py-2">
+      {rank !== null ? (
+        <span className="w-7 shrink-0 text-right text-xs font-semibold tabular-nums text-zinc-500">
+          {rank}
+        </span>
+      ) : null}
+      {game.iconUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={game.iconUrl}
+          alt=""
+          width={32}
+          height={32}
+          loading="lazy"
+          className="h-8 w-8 shrink-0 rounded"
+        />
+      ) : (
+        <span
+          aria-hidden="true"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-zinc-800 text-xs font-semibold text-zinc-400"
+        >
+          {game.name.slice(0, 1).toUpperCase()}
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <a
+          href={`https://store.steampowered.com/app/${game.appid}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block truncate text-sm font-medium text-zinc-100 after:absolute after:inset-0 after:rounded-xl hover:text-white focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-emerald-400"
+          title={game.name}
+        >
+          {game.name}
+          <span className="sr-only"> (opens Steam in a new tab)</span>
+        </a>
+        <p className="text-xs text-zinc-500">
+          {game.lastPlayedAt
+            ? `Last played ${new Date(game.lastPlayedAt).toLocaleDateString("en-US", {
+                month: "short",
+                year: "numeric",
+              })}`
+            : "No play date recorded"}
+        </p>
+      </div>
+      <span
+        className={`shrink-0 text-sm font-semibold tabular-nums ${
+          game.playtimeMinutes === 0 ? "text-amber-300" : "text-zinc-200"
+        }`}
+      >
+        {formatPlaytime(game.playtimeMinutes)}
+      </span>
+    </li>
   );
 }
 
@@ -327,9 +584,9 @@ function BacklogCard({ game }: { game: OwnedGame }) {
   return (
     <li
       ref={ref}
-      // `relative` keeps the visually hidden link text inside the deck's scroll
-      // area. Without it the page itself scrolls sideways on phones.
-      className="relative flex w-[17rem] shrink-0 snap-start flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-[#18181c]"
+      // `relative` keeps the visually hidden link text inside the card, so
+      // it can never widen the page on phones.
+      className="relative flex flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-[#18181c]"
     >
       <div className="relative aspect-[460/215] w-full bg-zinc-900">
         {app?.headerImage ? (

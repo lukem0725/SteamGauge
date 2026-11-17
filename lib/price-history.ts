@@ -1,7 +1,14 @@
 /**
  * lib/price-history.ts
  *
- * SteamLite's own record of store prices over time.
+ * Price history for the wishlist chart, from one of two sources:
+ *
+ *   "itad"   IsThereAnyDeal's multi-year log of Steam price changes
+ *            (lib/steam/composites.ts, fetchItadHistory). Used whenever an
+ *            ITAD key is configured and ITAD knows the game.
+ *   "local"  SteamGauge's own record, below. The fallback.
+ *
+ * SteamGauge's own record of store prices over time:
  *
  * Steam does not publish historical prices. Instead, every time a price is
  * fetched from Steam through the cached-fetch pipeline, the endpoint wrappers
@@ -9,7 +16,7 @@
  * per country, per UTC day (table `price_history`, migration 0002).
  *
  * Consequences worth remembering wherever this is shown:
- *   - History starts when SteamLite first saw the app, not when the app was
+ *   - History starts when SteamGauge first saw the app, not when the app was
  *     released. "Lowest recorded" is not "lowest ever".
  *   - A day with no observation has no row. The chart draws the last known
  *     price forward across such gaps.
@@ -44,11 +51,16 @@ export type LowStatus = "at_low" | "above_low" | "insufficient_history" | "no_pr
 
 export interface PriceHistory {
   readonly appid: number;
+  /** Where the points came from. Wording in the UI differs by source. */
+  readonly source: "itad" | "local";
   readonly currency: string | null;
   /** Oldest first. At most MAX_HISTORY_DAYS most recent recorded days. */
   readonly points: readonly PricePoint[];
   readonly firstObservedOn: string | null;
-  /** Number of distinct days with an observation. */
+  /**
+   * Number of points: days with an observation ("local") or days with a
+   * price change ("itad").
+   */
   readonly observedDays: number;
   /** The lowest recorded price and the most recent day it was seen. */
   readonly lowest: { readonly final: number; readonly date: string } | null;
@@ -125,7 +137,7 @@ export async function loadPriceHistory(
   const rows = raw.filter(isHistoryRow).reverse();
   return summarizePriceHistory(
     appid,
-    rows.map((row) => ({
+    rows.map((row): PricePoint => ({
       date: row.observed_on,
       final: row.price_final,
       initial: row.price_initial,
@@ -133,6 +145,7 @@ export async function loadPriceHistory(
     })),
     rows.at(-1)?.currency ?? null,
     currentFinal,
+    "local",
   );
 }
 
@@ -142,6 +155,7 @@ export function summarizePriceHistory(
   points: readonly PricePoint[],
   currency: string | null,
   currentFinal: number | null,
+  source: "itad" | "local" = "local",
 ): PriceHistory {
   let lowest: { final: number; date: string } | null = null;
   for (const point of points) {
@@ -150,12 +164,16 @@ export function summarizePriceHistory(
   }
 
   let lowStatus: LowStatus;
+  // ITAD's log covers years, so any history is enough to judge a low. Our own
+  // record needs a week before the claim means anything.
+  const needed = source === "itad" ? 1 : MIN_DAYS_FOR_LOW_CLAIM;
   if (currentFinal === null) lowStatus = "no_price";
-  else if (points.length < MIN_DAYS_FOR_LOW_CLAIM || !lowest) lowStatus = "insufficient_history";
+  else if (points.length < needed || !lowest) lowStatus = "insufficient_history";
   else lowStatus = currentFinal <= lowest.final ? "at_low" : "above_low";
 
   return {
     appid,
+    source,
     currency,
     points,
     firstObservedOn: points[0]?.date ?? null,

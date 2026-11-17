@@ -1,7 +1,7 @@
 /**
  * lib/supabase/server.ts
  *
- * The ONLY Supabase client in SteamLite. Server-side, administrative, and
+ * The ONLY Supabase client in SteamGauge. Server-side, administrative, and
  * created with the secret key (sb_secret_...). That key runs as the
  * `service_role` Postgres role and BYPASSES Row Level Security by design.
  *
@@ -95,7 +95,7 @@ function createAdminClient(): SupabaseClient {
     db: { schema: "public" },
     global: {
       fetch: noStoreFetch,
-      headers: { "X-Client-Info": "steamlite-server" },
+      headers: { "X-Client-Info": "steamgauge-server" },
     },
   });
 }

@@ -19,7 +19,11 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 /** Matches the `bucket` values used in rate_buckets. */
-export type SteamUpstream = "webapi" | "store";
+/**
+ * Matches the `bucket` values used in rate_buckets. "itad" is the
+ * IsThereAnyDeal API (lib/itad/client.ts), which has its own budget.
+ */
+export type SteamUpstream = "webapi" | "store" | "itad";
 
 /** Matches the CHECK constraint on api_cache.status. */
 export type CacheStatus = "ok" | "private" | "not_found";
@@ -55,6 +59,16 @@ export interface TtlPolicy {
  * | appNews              | 1 h    | 7 d   | ISteamNews/GetNewsForApp                |
  * | vanityUrl            | 30 d   | 30 d  | ISteamUser/ResolveVanityURL             |
  * | storeSpecials        | 1 h    | 24 h  | Storefront featuredcategories           |
+ * | salePage             | 1 h    | 24 h  | IStoreQueryService/Query + ITAD by appid|
+ * | dealsFallback        | 1 h    | 24 h  | featuredcategories + GetItems + ITAD    |
+ * | steamWishlistIds     | 30 min | 24 h  | IWishlistService/GetWishlist            |
+ * | wishlistView         | 30 min | 24 h  | GetWishlist + GetItems + ITAD prices    |
+ * | itadHistory          | 12 h   | 7 d   | ITAD lookup + games/history (all years) |
+ * | appReviews           | 3 d    | 14 d  | IUserReviewsService/GetAppReviews       |
+ * | currentPlayers       | 10 min | 2 h   | ISteamUserStats/GetNumberOfCurrentPlayers |
+ * | appStoreMeta         | 24 h   | 14 d  | GetItems: developers, publishers, tags  |
+ * | steamTags            | 7 d    | 30 d  | IStoreService/GetTagList                |
+ * | itadAppPrices        | 1 h    | 24 h  | ITAD lookup + prices at every store     |
  */
 export const TTL = {
   playerSummary:      { freshSeconds: 5 * MINUTE,  staleSeconds: 24 * HOUR, upstream: "webapi", scope: "player" },
@@ -68,6 +82,20 @@ export const TTL = {
   appNews:            { freshSeconds: 1 * HOUR,    staleSeconds: 7 * DAY,   upstream: "webapi", scope: "global" },
   vanityUrl:          { freshSeconds: 30 * DAY,    staleSeconds: 30 * DAY,  upstream: "webapi", scope: "global" },
   storeSpecials:      { freshSeconds: 1 * HOUR,    staleSeconds: 24 * HOUR, upstream: "store",  scope: "global" },
+  salePage:           { freshSeconds: 1 * HOUR,    staleSeconds: 24 * HOUR, upstream: "webapi", scope: "global" },
+  dealsFallback:      { freshSeconds: 1 * HOUR,    staleSeconds: 24 * HOUR, upstream: "store",  scope: "global" },
+  steamWishlistIds:   { freshSeconds: 30 * MINUTE, staleSeconds: 24 * HOUR, upstream: "webapi", scope: "player" },
+  wishlistView:       { freshSeconds: 30 * MINUTE, staleSeconds: 24 * HOUR, upstream: "webapi", scope: "player" },
+  itadHistory:        { freshSeconds: 12 * HOUR,   staleSeconds: 7 * DAY,   upstream: "itad",   scope: "global" },
+  // Review totals move slowly. Deals and the wishlist read these in bulk from
+  // the cache (peekCached) and fetch only a few missing ones per request.
+  appReviews:         { freshSeconds: 3 * DAY,     staleSeconds: 14 * DAY,  upstream: "webapi", scope: "global" },
+  // Game facts for expanded Deals rows and Wishlist cards. All shared by every
+  // user; only the live player count is short-lived.
+  currentPlayers:     { freshSeconds: 10 * MINUTE, staleSeconds: 2 * HOUR,  upstream: "webapi", scope: "global" },
+  appStoreMeta:       { freshSeconds: 24 * HOUR,   staleSeconds: 14 * DAY,  upstream: "webapi", scope: "global" },
+  steamTags:          { freshSeconds: 7 * DAY,     staleSeconds: 30 * DAY,  upstream: "webapi", scope: "global" },
+  itadAppPrices:      { freshSeconds: 1 * HOUR,    staleSeconds: 24 * HOUR, upstream: "itad",   scope: "global" },
 } as const satisfies Record<string, TtlPolicy>;
 
 export type SteamResource = keyof typeof TTL;
@@ -154,4 +182,30 @@ export const cacheKey = {
   appNews: (appid: number) => `app:${appid}:news`,
   vanityUrl: (name: string) => `vanity:${name.toLowerCase()}`,
   storeSpecials: (cc: string) => `store:specials:${cc.toLowerCase()}`,
+  salePage: (cc: string, page: number) => `deals:steam-sale:${cc.toLowerCase()}:${page}`,
+  // "v2": rows now carry cheaperElsewhere and ITAD lows.
+  dealsFallback: (cc: string) => `deals:featured:v2:${cc.toLowerCase()}`,
+  steamWishlistIds: (steamid: string) => `player:${steamid}:wishlist-ids`,
+  // The local watchlist is part of the input, so it is part of the key: adding
+  // or removing a watched game simply produces a new entry.
+  wishlistView: (steamid: string, localAppids: string) =>
+    `player:${steamid}:wishlist:${fnv1a(localAppids)}`,
+  // "full": requested with an explicit `since` covering every year. The
+  // older key held ITAD's default window (about 3 months) and is left to expire.
+  itadHistory: (appid: number, cc: string) => `app:${appid}:itad-history:full:${cc.toLowerCase()}`,
+  appReviews: (appid: number) => `app:${appid}:reviews`,
+  currentPlayers: (appid: number) => `app:${appid}:players`,
+  appStoreMeta: (appid: number, cc: string) => `app:${appid}:store-meta:${cc.toLowerCase()}`,
+  steamTags: (language: string) => `store:tags:${language}`,
+  itadAppPrices: (appid: number, cc: string) => `app:${appid}:itad-prices:${cc.toLowerCase()}`,
 } as const satisfies Record<SteamResource, (...args: never[]) => string>;
+
+/** Short, stable, non-cryptographic hash for cache keys (FNV-1a, 32-bit). */
+function fnv1a(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}

@@ -3,39 +3,79 @@
 /**
  * components/deals-view.tsx
  *
- * The "Bang for Your Buck" deals ranking. One request to GET /api/deals
- * returns trending discounted games already scored and sorted by cost per
- * hour, with a backlog cross-reference for the signed-in user.
+ * A dense, SteamDB-style table of current Steam discounts.
  *
- * A yellow warning badge appears on a deal when the user does not own the
- * game but already has unplayed games in one of its genres.
+ *   GET /api/deals   every deal at once (up to 1,000 rows), already marked
+ *                    with price badges and the user's owned / wished /
+ *                    watched flags.
  *
- * Mobile-first: laid out for a 360px portrait screen, widening at sm/lg.
+ * Filtering, sorting and paging run in the browser (lib/deals-table.ts), so
+ * they are instant and cost no requests.
+ *
+ * Clicking a row (or its name) expands a detail card under it, one at a
+ * time: price history, prices at every store, and game facts with the live
+ * player count, each loaded only when opened and cached. Nothing in the table
+ * leaves the page; the card's "View on Steam" button opens Steam in a new tab. Layout: filter sidebar beside the
+ * table from 1024px; on phones the filters fold into a panel above it and the
+ * table scrolls sideways inside its own frame.
+ *
  * Only types are imported from server-only modules.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
+
+import {
+  GameFactsPanel,
+  PriceHistoryPanel,
+  StorePriceList,
+  useGameInsights,
+} from "@/components/game-insights";
 
 import {
   DataAgeTicker,
   ErrorState,
   StatePanel,
-  VALUE_TONE,
-  ValueMeter,
   describeWishlistAddError,
   formatMoney,
   primaryButton,
   secondaryButton,
 } from "@/components/ui-kit";
+import { pageContainer } from "@/components/layout-width";
 import { apiGet, apiSend } from "@/lib/api/client";
 import type { SessionUser } from "@/lib/auth/session";
-import type { Deal, DealsBacklogSummary, DealsPayload } from "@/lib/deals";
+import {
+  DEFAULT_FILTERS,
+  DEFAULT_SORT,
+  FIRST_DIRECTION,
+  PAGE_SIZES,
+  STEAM_MIN_REVIEWS_FOR_SCORE,
+  countActiveFilters,
+  filterDeals,
+  paginate,
+  sortDeals,
+  type DealFilters,
+  type DealRow,
+  type DealsPayload,
+  type PageSize,
+  type SortDirection,
+  type SortKey,
+} from "@/lib/deals-table";
 
 /** After a stale answer, re-check this many times for the refreshed data. */
 const STALE_RECHECK_LIMIT = 2;
 const STALE_RECHECK_MS = 4_000;
-
-const STEAM_PRIVACY_SETTINGS_URL = "https://steamcommunity.com/my/edit/settings";
 
 // =============================================================================
 // Entry point
@@ -52,7 +92,7 @@ export function DealsView({ user }: DealsViewProps) {
 
 function Deals({ user }: DealsViewProps) {
   const deals = useQuery({
-    // Keyed by user: owned flags and backlog warnings are personal.
+    // Keyed by user: owned, wished and watched flags are personal.
     queryKey: ["deals", user.steamid],
     queryFn: ({ signal }) => apiGet<DealsPayload>("/api/deals", signal),
     staleTime: 5 * 60_000,
@@ -68,14 +108,16 @@ function Deals({ user }: DealsViewProps) {
 
   return (
     <div className="bg-zinc-950 text-zinc-100 antialiased">
-      <div className="mx-auto w-full max-w-5xl px-4 pb-12 pt-5 sm:px-6 lg:px-8">
+      <div className={pageContainer}>
         <header className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight text-zinc-50">
-              Bang for your buck
-            </h1>
+            <h1 className="text-2xl font-semibold tracking-tight text-zinc-50">Steam deals</h1>
             <p className="mt-1 text-sm text-zinc-400">
-              Trending Steam discounts, ranked by cost per hour.
+              {payload
+                ? `${payload.rows.length.toLocaleString("en-US")} discounted ${
+                    payload.rows.length === 1 ? "item" : "items"
+                  } on Steam right now.`
+                : "Current Steam discounts, with price history and your library."}
             </p>
           </div>
           <div className="pt-1">
@@ -83,7 +125,7 @@ function Deals({ user }: DealsViewProps) {
           </div>
         </header>
 
-        <main className="mt-6 space-y-4">
+        <main className="mt-6">
           {deals.isPending ? (
             <DealsSkeleton />
           ) : deals.isError ? (
@@ -93,27 +135,17 @@ function Deals({ user }: DealsViewProps) {
               retrying={deals.isFetching}
               subject="today's deals"
             />
-          ) : !payload || payload.deals.length === 0 ? (
-            <StatePanel tone="neutral" title="No featured discounts right now">
-              <p>
-                Steam is not featuring any discounted games at the moment. The list is refreshed
-                about once an hour.
-              </p>
+          ) : !payload || payload.rows.length === 0 ? (
+            <StatePanel tone="neutral" title="No discounts found right now">
+              <p>Steam has no discounted items to show at the moment. The list refreshes hourly.</p>
             </StatePanel>
           ) : (
-            <>
-              <BacklogNotice backlog={payload.backlog} />
-              <ol aria-label="Deals ranked by cost per hour, best first" className="space-y-3">
-                {payload.deals.map((deal) => (
-                  <DealRow key={deal.appid} deal={deal} steamid={user.steamid} />
-                ))}
-              </ol>
-              <p className="pt-2 text-xs leading-relaxed text-zinc-500">
-                Cost per hour is the sale price divided by game length. Length is a simulated
-                placeholder, not real completion data, so treat the ranking as illustrative.
-                Prices are current US store prices.
-              </p>
-            </>
+            <DealsExplorer
+              payload={payload}
+              steamid={user.steamid}
+              onRefresh={() => void deals.refetch()}
+              refreshing={deals.isFetching}
+            />
           )}
         </main>
       </div>
@@ -122,261 +154,1093 @@ function Deals({ user }: DealsViewProps) {
 }
 
 // =============================================================================
-// Backlog notice
+// Filters + table
 // =============================================================================
 
-/** Explains what the yellow badges are based on, or why there are none. */
-function BacklogNotice({ backlog }: { backlog: DealsBacklogSummary }) {
-  const shell = "rounded-2xl border px-4 py-3 text-sm leading-relaxed";
+/** The "Sort by" menu. Column headers set the same state. */
+const SORT_CHOICES: readonly { key: SortKey; direction: SortDirection; label: string }[] = [
+  { key: "score", direction: "desc", label: "Top deals" },
+  { key: "discount", direction: "desc", label: "Biggest discount" },
+  { key: "reviews", direction: "desc", label: "Most reviewed" },
+  { key: "rating", direction: "desc", label: "Best rated" },
+  { key: "price", direction: "asc", label: "Price: low to high" },
+  { key: "price", direction: "desc", label: "Price: high to low" },
+  { key: "release", direction: "desc", label: "Newest release" },
+  { key: "ends", direction: "asc", label: "Sale ending soonest" },
+  { key: "name", direction: "asc", label: "Name: A to Z" },
+  { key: "name", direction: "desc", label: "Name: Z to A" },
+];
 
-  if (backlog.status === "private") {
-    return (
-      <p className={`${shell} border-zinc-800 bg-[#131316] text-zinc-400`}>
-        Backlog warnings are off because your Steam game details are private.{" "}
-        <a
-          href={STEAM_PRIVACY_SETTINGS_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="font-medium text-zinc-200 underline decoration-zinc-600 underline-offset-2 hover:decoration-zinc-400"
-        >
-          Change privacy settings
-        </a>
-      </p>
+const COLUMN_NAMES: Readonly<Record<SortKey, string>> = {
+  score: "Top deals",
+  name: "Name",
+  discount: "Discount",
+  price: "Price",
+  rating: "Rating",
+  reviews: "Reviews",
+  release: "Release date",
+  ends: "Sale end",
+};
+
+function DealsExplorer({
+  payload,
+  steamid,
+  onRefresh,
+  refreshing,
+}: {
+  payload: DealsPayload;
+  steamid: string;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  const [filters, setFilters] = useState<DealFilters>(DEFAULT_FILTERS);
+  const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>(DEFAULT_SORT);
+  const [pageSize, setPageSize] = useState<PageSize>(50);
+  const [page, setPage] = useState(1);
+
+  const filtered = useMemo(() => filterDeals(payload.rows, filters), [payload.rows, filters]);
+  const sorted = useMemo(
+    () => sortDeals(filtered, sort.key, sort.direction),
+    [filtered, sort.key, sort.direction],
+  );
+  const slice = paginate(sorted, page, pageSize);
+
+  // Any change to what is listed starts again at page 1.
+  const update = (next: Partial<DealFilters>) => {
+    setFilters((current) => ({ ...current, ...next }));
+    setPage(1);
+  };
+  const onSort = (key: SortKey) => {
+    setSort((current) =>
+      current.key === key
+        ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
+        : { key, direction: FIRST_DIRECTION[key] },
     );
-  }
+    setPage(1);
+  };
 
-  if (backlog.status === "unavailable") {
-    return (
-      <p className={`${shell} border-zinc-800 bg-[#131316] text-zinc-400`}>
-        We could not load your library just now, so backlog warnings are not shown.
-      </p>
-    );
-  }
+  const active = countActiveFilters(filters);
 
-  if (backlog.unplayedCount === 0) {
-    return (
-      <p className={`${shell} border-emerald-400/20 bg-emerald-400/5 text-emerald-200`}>
-        Your backlog is empty, so nothing here competes with games you already own.
-      </p>
-    );
-  }
-
-  const partial = backlog.analyzedCount < backlog.unplayedCount;
   return (
-    <p className={`${shell} border-yellow-400/25 bg-yellow-400/5 text-zinc-300`}>
-      <span className="font-medium text-yellow-200">
-        You own {backlog.unplayedCount} unplayed {backlog.unplayedCount === 1 ? "game" : "games"}.
-      </span>{" "}
-      A yellow badge marks a deal in a genre you already have waiting.
-      {partial ? (
-        <span className="text-zinc-500">
-          {" "}
-          Based on {backlog.analyzedCount} of your {backlog.unplayedCount} unplayed games.
-        </span>
-      ) : null}
-    </p>
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[14rem_minmax(0,1fr)] min-[90rem]:grid-cols-[16rem_minmax(0,1fr)]">
+      {/* Phones and tablets: collapsible. Desktop: always-open sidebar. */}
+      <details className="group rounded-2xl border border-zinc-800 bg-[#131316] lg:hidden">
+        <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between rounded-2xl px-4 text-sm font-medium text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
+          <span>
+            Filters
+            {active > 0 ? (
+              <span className="ml-2 rounded-full bg-emerald-400 px-1.5 py-0.5 text-[11px] font-semibold text-zinc-950">
+                {active}
+              </span>
+            ) : null}
+          </span>
+          <span aria-hidden="true" className="text-zinc-500 transition-transform group-open:rotate-180">
+            ▾
+          </span>
+        </summary>
+        <div className="border-t border-zinc-800 p-4">
+          <FilterPanel payload={payload} filters={filters} update={update} idPrefix="m" />
+        </div>
+      </details>
+      <aside
+        aria-label="Filters"
+        className="hidden self-start rounded-2xl border border-zinc-800 bg-[#131316] p-4 lg:sticky lg:top-20 lg:block"
+      >
+        <FilterPanel payload={payload} filters={filters} update={update} idPrefix="d" />
+      </aside>
+
+      <section aria-label="Deals" className="min-w-0">
+        <ResultsBar
+          slice={slice}
+          sort={sort}
+          onSortChoice={(next) => {
+            setSort(next);
+            setPage(1);
+          }}
+          pageSize={pageSize}
+          onPageSize={(size) => {
+            setPageSize(size);
+            setPage(1);
+          }}
+          onReset={active > 0 ? () => update(DEFAULT_FILTERS) : null}
+        />
+
+        {slice.total === 0 ? (
+          <div className="mt-3 rounded-2xl border border-zinc-800 bg-[#131316] p-8 text-center text-sm text-zinc-400">
+            No deals match these filters.{" "}
+            <button
+              type="button"
+              onClick={() => update(DEFAULT_FILTERS)}
+              className="font-medium text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+            >
+              Reset filters
+            </button>
+          </div>
+        ) : (
+          <DealsTable rows={slice.items} sort={sort} onSort={onSort} steamid={steamid} />
+        )}
+
+        {slice.pageCount > 1 ? (
+          <Pager page={slice.page} pageCount={slice.pageCount} onPage={setPage} />
+        ) : null}
+
+        <Footnotes payload={payload} onRefresh={onRefresh} refreshing={refreshing} />
+      </section>
+    </div>
   );
 }
 
-// =============================================================================
-// One ranked deal
-// =============================================================================
+// -----------------------------------------------------------------------------
+// Filter panel
+// -----------------------------------------------------------------------------
 
-function DealRow({ deal, steamid }: { deal: Deal; steamid: string }) {
-  const tone = VALUE_TONE[deal.valueLevel];
-  const isFree = deal.finalPrice === 0;
-
+function FilterPanel({
+  payload,
+  filters,
+  update,
+  idPrefix,
+}: {
+  payload: DealsPayload;
+  filters: DealFilters;
+  update: (next: Partial<DealFilters>) => void;
+  /** The panel is rendered twice (phone + desktop), so ids need a prefix. */
+  idPrefix: string;
+}) {
   return (
-    <li className="relative overflow-hidden rounded-2xl border border-zinc-800 bg-[#18181c]">
-      <div className="flex flex-col sm:flex-row">
-        {/* Artwork with the rank over it */}
-        <div className="relative aspect-[460/215] w-full shrink-0 overflow-hidden bg-zinc-900 sm:m-4 sm:mr-0 sm:w-60 sm:self-start sm:rounded-xl">
-          {deal.headerImage ? (
-            // Steam CDN image; a plain <img> avoids next/image remote configuration.
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={deal.headerImage}
-              alt=""
-              loading="lazy"
-              decoding="async"
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <div className="flex h-full min-h-24 w-full items-center justify-center bg-[linear-gradient(135deg,#27272a,#18181b)]">
-              <span aria-hidden="true" className="text-2xl font-semibold text-zinc-600">
-                {deal.name.slice(0, 1).toUpperCase()}
-              </span>
-            </div>
-          )}
-          <span className="absolute left-2 top-2 flex h-8 min-w-8 items-center justify-center rounded-full bg-zinc-950/85 px-2 text-sm font-bold tabular-nums text-zinc-100 ring-1 ring-zinc-700">
-            <span className="sr-only">Rank </span>
-            {deal.rank}
-          </span>
-          <span className="absolute right-2 top-2 rounded-md bg-emerald-400 px-1.5 py-0.5 text-xs font-bold tabular-nums text-zinc-950">
-            -{deal.discountPercent}%
-          </span>
-        </div>
-
-        <div className="flex min-w-0 flex-1 flex-col p-4">
-          <h2 className="truncate text-base font-semibold text-zinc-50" title={deal.name}>
-            {deal.name}
-          </h2>
-
-          {/* Badges */}
-          {deal.backlogMatches || deal.owned ? (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {deal.backlogMatches ? <BacklogWarningBadge deal={deal} /> : null}
-              {deal.owned ? (
-                <span className="inline-flex items-center rounded-full bg-sky-400/10 px-2.5 py-1 text-xs font-medium text-sky-300 ring-1 ring-sky-400/30">
-                  Already in your library
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-
-          {/* Score */}
-          <div className="mt-3">
-            <div className="flex items-baseline justify-between gap-3">
-              <p className={`text-sm font-semibold ${tone.text}`}>
-                {isFree ? "Free right now" : deal.valueLabel}
-              </p>
-              <p className="text-lg font-semibold tabular-nums text-zinc-50">
-                {formatMoney(deal.centsPerHour, deal.currency)}
-                <span className="text-sm font-normal text-zinc-500">/hr</span>
-              </p>
-            </div>
-            <ValueMeter level={deal.valueLevel} bar={tone.bar} />
-          </div>
-
-          {/* Price and length */}
-          <p className="mt-3 text-sm text-zinc-400">
-            <span className="font-semibold tabular-nums text-zinc-100">
-              {formatMoney(deal.finalPrice, deal.currency)}
-            </span>{" "}
-            <s className="tabular-nums text-zinc-500">
-              <span className="sr-only">was </span>
-              {formatMoney(deal.originalPrice, deal.currency)}
-            </s>
-            <span className="mx-1.5 text-zinc-700" aria-hidden="true">
-              ·
-            </span>
-            ~{deal.estimatedHours}h <span className="text-zinc-600">(simulated)</span>
+    <div className="space-y-5 text-sm">
+      <Fieldset legend="Deal status">
+        {!payload.lowsAvailable ? (
+          <p className="mb-2 text-xs leading-relaxed text-zinc-500">
+            Price history is not connected, so these are unavailable.
           </p>
+        ) : null}
+        <RadioGroup
+          name={`${idPrefix}-status`}
+          value={filters.status}
+          disabled={!payload.lowsAvailable}
+          onChange={(status) => update({ status })}
+          options={[
+            { value: "any", label: "Any discount" },
+            { value: "historical", label: "Historical low" },
+            { value: "matching", label: "Matching low" },
+            { value: "year", label: "1-year low" },
+          ]}
+        />
+      </Fieldset>
 
-          {deal.genres && deal.genres.length > 0 ? (
-            <ul aria-label="Genres" className="mt-3 flex flex-wrap gap-1.5">
-              {deal.genres.slice(0, 4).map((genre) => (
-                <li
-                  key={genre}
-                  className="rounded-md bg-zinc-800/80 px-2 py-0.5 text-[11px] font-medium text-zinc-400"
-                >
-                  {genre}
-                </li>
-              ))}
-            </ul>
-          ) : null}
+      <Fieldset legend="Owned games">
+        {!payload.ownershipKnown ? (
+          <p className="mb-2 text-xs leading-relaxed text-zinc-500">
+            Your library is private, so ownership is unknown.
+          </p>
+        ) : null}
+        <RadioGroup
+          name={`${idPrefix}-owned`}
+          value={filters.owned}
+          disabled={!payload.ownershipKnown}
+          onChange={(owned) => update({ owned })}
+          options={[
+            { value: "include", label: "Include" },
+            { value: "exclude", label: "Exclude" },
+            { value: "only", label: "Only owned" },
+          ]}
+        />
+      </Fieldset>
 
-          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-            {/* Nothing to watch for on a game the user already owns. */}
-            {deal.owned ? null : <WatchButton deal={deal} steamid={steamid} />}
-            <a
-              href={`https://store.steampowered.com/app/${deal.appid}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={secondaryButton}
+      <Fieldset legend="Show">
+        <Checkbox
+          id={`${idPrefix}-wished`}
+          checked={filters.wishedOnly}
+          onChange={(wishedOnly) => update({ wishedOnly })}
+          label="Only my wishlist"
+          hint="Steam wishlist or SteamGauge watchlist"
+        />
+        <Checkbox
+          id={`${idPrefix}-games`}
+          checked={filters.gamesOnly}
+          onChange={(gamesOnly) => update({ gamesOnly })}
+          label="Games only (hide DLC)"
+        />
+        <Checkbox
+          id={`${idPrefix}-unrated`}
+          checked={filters.hideUnrated}
+          onChange={(hideUnrated) => update({ hideUnrated })}
+          label="Hide games Steam hasn't rated"
+          hint={`Fewer than ${STEAM_MIN_REVIEWS_FOR_SCORE} reviews`}
+        />
+      </Fieldset>
+
+      <Fieldset legend="Price (USD)">
+        <div className="grid grid-cols-2 gap-2">
+          <NumberField
+            id={`${idPrefix}-pmin`}
+            label="Min"
+            value={filters.priceMin}
+            step={1}
+            onChange={(priceMin) => update({ priceMin })}
+          />
+          <NumberField
+            id={`${idPrefix}-pmax`}
+            label="Max"
+            value={filters.priceMax}
+            step={1}
+            onChange={(priceMax) => update({ priceMax })}
+          />
+        </div>
+      </Fieldset>
+
+      <RangeField
+        id={`${idPrefix}-rating`}
+        label="Minimum rating"
+        value={filters.minRating}
+        max={95}
+        step={5}
+        format={(value) => (value === 0 ? "Any" : `${value}%`)}
+        onChange={(minRating) => update({ minRating })}
+      />
+
+      <Fieldset legend="Minimum reviews">
+        <NumberField
+          id={`${idPrefix}-reviews`}
+          label="Reviews"
+          hideLabel
+          value={filters.minReviews === 0 ? null : filters.minReviews}
+          step={100}
+          onChange={(value) => update({ minReviews: value ?? 0 })}
+        />
+      </Fieldset>
+
+      <RangeField
+        id={`${idPrefix}-discount`}
+        label="Minimum discount"
+        value={filters.minDiscount}
+        max={95}
+        step={5}
+        format={(value) => (value === 0 ? "Any" : `${value}%`)}
+        onChange={(minDiscount) => update({ minDiscount })}
+      />
+    </div>
+  );
+}
+
+function Fieldset({ legend, children }: { legend: string; children: ReactNode }) {
+  return (
+    <fieldset>
+      <legend className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
+        {legend}
+      </legend>
+      {children}
+    </fieldset>
+  );
+}
+
+function RadioGroup<V extends string>({
+  name,
+  value,
+  options,
+  onChange,
+  disabled = false,
+}: {
+  name: string;
+  value: V;
+  options: readonly { value: V; label: string }[];
+  onChange: (value: V) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="space-y-0.5">
+      {options.map((option) => (
+        <label
+          key={option.value}
+          className={`flex min-h-9 items-center gap-2.5 rounded-lg px-1.5 ${
+            disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-zinc-800/60"
+          }`}
+        >
+          <input
+            type="radio"
+            name={name}
+            value={option.value}
+            checked={value === option.value}
+            disabled={disabled}
+            onChange={() => onChange(option.value)}
+            className="h-4 w-4 accent-emerald-400"
+          />
+          <span className="text-zinc-200">{option.label}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function Checkbox({
+  id,
+  checked,
+  onChange,
+  label,
+  hint,
+}: {
+  id: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+  hint?: string;
+}) {
+  return (
+    <label
+      htmlFor={id}
+      className="flex min-h-9 cursor-pointer items-start gap-2.5 rounded-lg px-1.5 py-1.5 hover:bg-zinc-800/60"
+    >
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.checked)}
+        className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-400"
+      />
+      <span>
+        <span className="text-zinc-200">{label}</span>
+        {hint ? <span className="block text-xs text-zinc-500">{hint}</span> : null}
+      </span>
+    </label>
+  );
+}
+
+function NumberField({
+  id,
+  label,
+  value,
+  step,
+  onChange,
+  hideLabel = false,
+}: {
+  id: string;
+  label: string;
+  value: number | null;
+  step: number;
+  onChange: (value: number | null) => void;
+  hideLabel?: boolean;
+}) {
+  return (
+    <div>
+      <label htmlFor={id} className={hideLabel ? "sr-only" : "mb-1 block text-xs text-zinc-400"}>
+        {label}
+      </label>
+      <input
+        id={id}
+        type="number"
+        inputMode="decimal"
+        min={0}
+        step={step}
+        value={value ?? ""}
+        placeholder="Any"
+        onChange={(event: ChangeEvent<HTMLInputElement>) => {
+          const raw = event.target.value.trim();
+          const number = Number(raw);
+          onChange(raw === "" || !Number.isFinite(number) || number < 0 ? null : number);
+        }}
+        className="min-h-10 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-2.5 text-sm tabular-nums text-zinc-100 placeholder:text-zinc-600 focus-visible:border-emerald-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/40"
+      />
+    </div>
+  );
+}
+
+function RangeField({
+  id,
+  label,
+  value,
+  max,
+  step,
+  format,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: number;
+  max: number;
+  step: number;
+  format: (value: number) => string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex items-baseline justify-between">
+        <label htmlFor={id} className="text-xs font-medium uppercase tracking-wider text-zinc-500">
+          {label}
+        </label>
+        <output htmlFor={id} className="text-sm font-semibold tabular-nums text-zinc-200">
+          {format(value)}
+        </output>
+      </div>
+      <input
+        id={id}
+        type="range"
+        min={0}
+        max={max}
+        step={step}
+        value={value}
+        aria-valuetext={format(value)}
+        onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(Number(event.target.value))}
+        className="h-6 w-full cursor-pointer accent-emerald-400"
+      />
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Results bar, pager, footnotes
+// -----------------------------------------------------------------------------
+
+function ResultsBar({
+  slice,
+  sort,
+  onSortChoice,
+  pageSize,
+  onPageSize,
+  onReset,
+}: {
+  slice: { from: number; to: number; total: number };
+  sort: { key: SortKey; direction: SortDirection };
+  onSortChoice: (sort: { key: SortKey; direction: SortDirection }) => void;
+  pageSize: PageSize;
+  onPageSize: (size: PageSize) => void;
+  onReset: (() => void) | null;
+}) {
+  const selectId = useId();
+  const sortId = useId();
+  const current = `${sort.key}:${sort.direction}`;
+  const listed = SORT_CHOICES.some((choice) => `${choice.key}:${choice.direction}` === current);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <p aria-live="polite" className="text-sm text-zinc-400">
+        {slice.total === 0 ? (
+          "No matches"
+        ) : (
+          <>
+            Showing{" "}
+            <span className="font-semibold tabular-nums text-zinc-200">
+              {slice.from}–{slice.to}
+            </span>{" "}
+            of <span className="font-semibold tabular-nums text-zinc-200">{slice.total.toLocaleString("en-US")}</span>
+          </>
+        )}
+        {onReset ? (
+          <>
+            {" · "}
+            <button
+              type="button"
+              onClick={onReset}
+              className="font-medium text-emerald-300 underline-offset-2 hover:underline"
             >
-              View on Steam
-              <span className="sr-only"> (opens in a new tab): {deal.name}</span>
-            </a>
-          </div>
+              Reset filters
+            </button>
+          </>
+        ) : null}
+      </p>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex items-center gap-2">
+          <label htmlFor={sortId} className="text-sm text-zinc-500">
+            Sort by
+          </label>
+          <select
+            id={sortId}
+            value={current}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+              const [key, direction] = event.target.value.split(":") as [SortKey, SortDirection];
+              onSortChoice({ key, direction });
+            }}
+            className="min-h-10 rounded-lg border border-zinc-700 bg-zinc-900 px-2 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+          >
+            {listed ? null : (
+              // A column header chose an order the menu does not list.
+              <option value={current}>
+                {COLUMN_NAMES[sort.key]} ({sort.direction === "asc" ? "ascending" : "descending"})
+              </option>
+            )}
+            {SORT_CHOICES.map((choice) => (
+              <option key={`${choice.key}:${choice.direction}`} value={`${choice.key}:${choice.direction}`}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+        <label htmlFor={selectId} className="text-sm text-zinc-500">
+          Per page
+        </label>
+        <select
+          id={selectId}
+          value={pageSize}
+          onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+            onPageSize(Number(event.target.value) as PageSize)
+          }
+          className="min-h-10 rounded-lg border border-zinc-700 bg-zinc-900 px-2 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+        >
+          {PAGE_SIZES.map((size) => (
+            <option key={size} value={size}>
+              {size}
+            </option>
+          ))}
+        </select>
         </div>
       </div>
-    </li>
+    </div>
   );
 }
 
-/**
- * "Watch this game" adds the deal to the wishlist in one tap. Once watched
- * (already, or just now) it becomes an "In wishlist" link to that page.
- */
-function WatchButton({ deal, steamid }: { deal: Deal; steamid: string }) {
-  const queryClient = useQueryClient();
-  const watch = useMutation({
-    mutationFn: () => apiSend("POST", "/api/wishlist", { appid: deal.appid }),
-    // The wishlist page must show the new game next time it is opened.
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["wishlist", steamid] }),
-  });
-
-  if (deal.watched || watch.isSuccess) {
-    return (
-      <Link
-        href="/wishlist"
-        className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-emerald-400/40 bg-emerald-400/10 px-4 text-sm font-medium text-emerald-300 transition-colors hover:bg-emerald-400/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
-      >
-        <svg aria-hidden="true" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
-          <path
-            fillRule="evenodd"
-            clipRule="evenodd"
-            d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0L3.3 9.7a1 1 0 1 1 1.4-1.4L8.5 12l6.8-6.7a1 1 0 0 1 1.4 0Z"
-          />
-        </svg>
-        In wishlist
-        <span className="sr-only">: {deal.name}. Open your wishlist</span>
-      </Link>
-    );
-  }
-
+function Pager({
+  page,
+  pageCount,
+  onPage,
+}: {
+  page: number;
+  pageCount: number;
+  onPage: (page: number) => void;
+}) {
+  const go = (next: number) => {
+    onPage(next);
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  };
   return (
-    <div className="flex flex-col">
+    <nav aria-label="Pages" className="mt-4 flex items-center justify-between gap-3">
+      <button type="button" onClick={() => go(page - 1)} disabled={page <= 1} className={secondaryButton}>
+        <span aria-hidden="true">←</span>
+        <span className="ml-1">Previous</span>
+      </button>
+      <p className="text-sm tabular-nums text-zinc-400">
+        Page <span className="font-semibold text-zinc-200">{page}</span> of {pageCount}
+      </p>
       <button
         type="button"
-        onClick={() => watch.mutate()}
-        disabled={watch.isPending}
-        className={primaryButton}
+        onClick={() => go(page + 1)}
+        disabled={page >= pageCount}
+        className={secondaryButton}
       >
-        {watch.isPending ? "Adding…" : "Watch this game"}
-        <span className="sr-only">: {deal.name}</span>
+        <span className="mr-1">Next</span>
+        <span aria-hidden="true">→</span>
       </button>
-      {watch.isError ? (
-        <p role="alert" className="mt-2 max-w-xs text-sm text-rose-300">
-          {describeWishlistAddError(watch.error, null)}
+    </nav>
+  );
+}
+
+function Footnotes({
+  payload,
+  onRefresh,
+  refreshing,
+}: {
+  payload: DealsPayload;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  return (
+    <div className="mt-6 space-y-1.5 text-xs leading-relaxed text-zinc-500">
+      {payload.lowsAvailable ? (
+        <p>
+          <strong className="font-medium text-zinc-400">Historical low</strong>: below Steam&rsquo;s
+          previous all-time low. <strong className="font-medium text-zinc-400">Matching low</strong>:
+          equal to it. <strong className="font-medium text-zinc-400">1-year low</strong>: at or below
+          the lowest price at any tracked store in the past 12 months. A price under the badges shows
+          another store&rsquo;s current price when it beats Steam&rsquo;s (for example
+          &ldquo;$13.49 at GOG&rdquo;). Price data from{" "}
+          <a
+            href="https://isthereanydeal.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline decoration-zinc-700 underline-offset-2 hover:text-zinc-300"
+          >
+            IsThereAnyDeal
+          </a>
+          .
         </p>
+      ) : (
+        <p>Price history is not connected, so historical-low badges are not shown.</p>
+      )}
+      {payload.source === "featured" ? (
+        <p>
+          Steam&rsquo;s full sale list could not be loaded just now, so this shows Steam&rsquo;s
+          featured specials only.
+        </p>
+      ) : (
+        <p>Every discounted game among Steam&rsquo;s top 1,000 sellers, straight from Steam.</p>
+      )}
+      <p>
+        <strong className="font-medium text-zinc-400">Top deals</strong> ranks by log10(Steam
+        reviews) &times; discount %, so widely reviewed games on sale come first. Ratings are the
+        share of positive Steam reviews in all languages. US prices.
+      </p>
+      {payload.reviewsPending > 0 ? (
+        <p>
+          Steam ratings for {payload.reviewsPending.toLocaleString("en-US")}{" "}
+          {payload.reviewsPending === 1 ? "item is" : "items are"} still loading. They are sorted
+          last, and minimum rating and review filters hide them until then.{" "}
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing}
+            className="font-medium text-emerald-300 underline-offset-2 hover:underline disabled:cursor-wait disabled:opacity-60"
+          >
+            {refreshing ? "Loading…" : "Load more ratings"}
+          </button>
+        </p>
+      ) : null}
+      {payload.partial ? <p>Some deals could not be loaded just now, so this list is shorter than usual.</p> : null}
+      {payload.steamWishlist === "empty_or_private" ? (
+        <p>Your Steam wishlist is empty or private, so only your SteamGauge watchlist counts as wishlisted.</p>
       ) : null}
     </div>
   );
 }
 
-/**
- * The yellow backlog warning. Names the most crowded matching genre, with
- * the full list in the tooltip and for screen readers.
- */
-function BacklogWarningBadge({ deal }: { deal: Deal }) {
-  const matches = deal.backlogMatches ?? [];
-  const top = matches[0];
-  if (!top) return null;
+// -----------------------------------------------------------------------------
+// The table
+// -----------------------------------------------------------------------------
 
-  const detail = matches
-    .map((match) => `${match.unplayedCount} unplayed ${match.genre}`)
-    .join(", ");
+/** Fixed column widths (the table uses table-layout: fixed), summing to 100%. */
+const COLUMNS: readonly { key: SortKey | null; label: string; align: "left" | "right"; className: string }[] = [
+  { key: "name", label: "Game", align: "left", className: "w-[24%]" },
+  { key: "discount", label: "Discount", align: "right", className: "w-[9%]" },
+  { key: "price", label: "Price", align: "right", className: "w-[9%]" },
+  { key: null, label: "Price status", align: "left", className: "w-[16%]" },
+  { key: "rating", label: "Rating", align: "right", className: "w-[12%]" },
+  { key: "release", label: "Released", align: "right", className: "w-[9%]" },
+  { key: "ends", label: "Sale ends", align: "right", className: "w-[9%]" },
+  { key: null, label: "Wishlist", align: "right", className: "w-[12%]" },
+];
 
+function DealsTable({
+  rows,
+  sort,
+  onSort,
+  steamid,
+}: {
+  rows: readonly DealRow[];
+  sort: { key: SortKey; direction: SortDirection };
+  onSort: (key: SortKey) => void;
+  steamid: string;
+}) {
+  const now = Date.now();
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const frame = useRef<HTMLDivElement>(null);
+  const frameWidth = useElementWidth(frame);
+  return (
+    // `relative` makes this frame the containing block for the visually hidden
+    // text in the rows, so it scrolls with the table instead of widening the
+    // whole page on phones.
+    <div ref={frame} className="relative mt-3 overflow-x-auto rounded-2xl border border-zinc-800 bg-[#131316]">
+      <table className="w-full min-w-[56rem] table-fixed border-collapse text-left text-sm">
+        <caption className="sr-only">
+          Steam deals. Column headers with buttons sort the table. Select a game to show its
+          details below its row.
+        </caption>
+        <thead>
+          <tr className="border-b border-zinc-800 text-[11px] uppercase tracking-wide text-zinc-500 min-[90rem]:text-xs min-[90rem]:tracking-wider">
+            {COLUMNS.map((column) => {
+              const active = column.key !== null && column.key === sort.key;
+              return (
+                <th
+                  key={column.label}
+                  scope="col"
+                  aria-sort={
+                    active ? (sort.direction === "asc" ? "ascending" : "descending") : undefined
+                  }
+                  className={`px-2 py-2.5 font-medium min-[90rem]:px-3 ${column.align === "right" ? "text-right" : ""} ${
+                    column.className
+                  }`}
+                >
+                  {column.key ? (
+                    <button
+                      type="button"
+                      onClick={() => onSort(column.key as SortKey)}
+                      className={`inline-flex min-h-8 items-center gap-0.5 rounded-md uppercase tracking-wide hover:text-zinc-200 min-[90rem]:gap-1 min-[90rem]:tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
+                        active ? "text-zinc-100" : ""
+                      }`}
+                    >
+                      {column.label}
+                      {/* Below 1440px (90rem) only the active column shows its arrow, so labels fit. */}
+                      <span aria-hidden="true" className={active ? "text-emerald-400" : "hidden text-zinc-700 min-[90rem]:inline"}>
+                        {active ? (sort.direction === "asc" ? "▲" : "▼") : "↕"}
+                      </span>
+                    </button>
+                  ) : (
+                    column.label
+                  )}
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const open = expanded === row.appid;
+            return (
+              <Fragment key={row.appid}>
+                <DealTableRow
+                  row={row}
+                  steamid={steamid}
+                  now={now}
+                  open={open}
+                  onToggle={() => setExpanded(open ? null : row.appid)}
+                />
+                {open ? (
+                  <tr id={`deal-${row.appid}-details`} className="border-b border-zinc-800/70">
+                    <td colSpan={COLUMNS.length} className="p-0">
+                      <DealDetails row={row} width={frameWidth} onClose={() => setExpanded(null)} />
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Keeps a click on a control from also toggling the row. */
+const stopRowToggle = (event: MouseEvent) => event.stopPropagation();
+
+function DealTableRow({
+  row,
+  steamid,
+  now,
+  open,
+  onToggle,
+}: {
+  row: DealRow;
+  steamid: string;
+  now: number;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <tr
+      onClick={onToggle}
+      className={`cursor-pointer border-b border-zinc-800/70 last:border-0 hover:bg-zinc-900/60 ${
+        open ? "bg-zinc-900/70" : ""
+      }`}
+    >
+      <td className="px-3 py-2">
+        <div className="flex min-w-0 items-center gap-3">
+          {row.capsuleImage ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={row.capsuleImage}
+              alt=""
+              width={96}
+              height={36}
+              loading="lazy"
+              decoding="async"
+              className="h-9 w-24 shrink-0 rounded object-cover"
+            />
+          ) : (
+            <span aria-hidden="true" className="h-9 w-24 shrink-0 rounded bg-zinc-800" />
+          )}
+          <div className="min-w-0">
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={`deal-${row.appid}-details`}
+              onClick={(event: MouseEvent) => {
+                event.stopPropagation();
+                onToggle();
+              }}
+              className={`line-clamp-3 max-w-full break-words rounded text-left font-medium leading-snug underline-offset-4 hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
+                open ? "text-emerald-300 decoration-emerald-400/60" : "text-zinc-100 decoration-zinc-500"
+              }`}
+              title={row.name}
+            >
+              {row.name}
+              <span className="sr-only">{open ? ", hide details" : ", show details"}</span>
+            </button>
+            <div className="mt-0.5 flex flex-wrap gap-1">
+              {row.type === "dlc" ? <Chip tone="zinc">DLC</Chip> : null}
+              {row.owned ? <Chip tone="sky">Owned</Chip> : null}
+              {row.wished ? <Chip tone="violet">Steam wishlist</Chip> : null}
+            </div>
+          </div>
+        </div>
+      </td>
+      <td className="px-3 py-2 text-right">
+        <span className="inline-block rounded bg-emerald-400/15 px-1.5 py-0.5 font-semibold tabular-nums text-emerald-300">
+          -{row.discountPercent}%
+        </span>
+      </td>
+      <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
+        <span className="font-semibold text-zinc-50">{formatMoney(row.price, row.currency)}</span>
+        <s className="block text-xs text-zinc-500">
+          <span className="sr-only">was </span>
+          {formatMoney(row.regular, row.currency)}
+        </s>
+      </td>
+      <td className="px-3 py-2">
+        <div className="flex flex-wrap gap-1">
+          {row.badges.historicalLow ? <Chip tone="emerald">Historical low</Chip> : null}
+          {row.badges.matchingLow ? <Chip tone="lime">Matching low</Chip> : null}
+          {row.badges.yearLow ? <Chip tone="amber">1-year low</Chip> : null}
+        </div>
+        {row.cheaperElsewhere ? (
+          <p
+            className="mt-1 truncate text-xs text-zinc-400"
+            title={`Cheaper at ${row.cheaperElsewhere.shop}: ${formatMoney(row.cheaperElsewhere.price, row.currency)}`}
+          >
+            <span className="sr-only">Cheaper elsewhere: </span>
+            <span className="font-medium tabular-nums text-zinc-200">
+              {formatMoney(row.cheaperElsewhere.price, row.currency)}
+            </span>{" "}
+            at {row.cheaperElsewhere.shop}
+          </p>
+        ) : null}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2 text-right">
+        <Rating percent={row.reviewPercent} count={row.reviewCount} label={row.reviewLabel} />
+      </td>
+      <td className="whitespace-nowrap px-3 py-2 text-right text-zinc-300">
+        {row.comingSoon ? "Coming soon" : formatRelease(row.releaseDate)}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2 text-right text-zinc-300">
+        <SaleEnds iso={row.saleEndsAt} now={now} />
+      </td>
+      <td className="px-3 py-2 text-right" onClick={stopRowToggle}>
+        {row.owned ? (
+          <span className="sr-only">Owned, no wishlist action</span>
+        ) : (
+          <WatchToggle row={row} steamid={steamid} />
+        )}
+      </td>
+    </tr>
+  );
+}
+
+/** The expanded card under a row. Loads its data only when opened. */
+function DealDetails({
+  row,
+  width,
+  onClose,
+}: {
+  row: DealRow;
+  /** The scroll frame's visible width, so the card stays readable on phones. */
+  width: number | null;
+  onClose: () => void;
+}) {
+  const insights = useGameInsights(row.appid, "full", true);
+  const data = insights.data?.status === "ok" ? insights.data.data : null;
+  return (
+    <div
+      // Sticky inside the horizontally scrolling table: the card stays in
+      // view and as wide as the visible frame, not the 56rem table.
+      className="sticky left-0 border-t border-zinc-800 bg-[#18181c] p-4 sm:p-5"
+      style={width ? { width } : undefined}
+      onKeyDown={(event: KeyboardEvent) => {
+        if (event.key === "Escape") onClose();
+      }}
+    >
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+        {row.headerImage ? (
+          // Steam CDN image; a plain <img> avoids next/image remote configuration.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={row.headerImage}
+            alt=""
+            width={460}
+            height={215}
+            loading="lazy"
+            decoding="async"
+            className="aspect-[460/215] w-full shrink-0 rounded-xl bg-zinc-900 object-cover sm:w-56 lg:w-64"
+          />
+        ) : null}
+        <div className="flex min-w-0 flex-1 flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold text-zinc-50">{row.name}</h3>
+          <p className="mt-0.5 text-sm text-zinc-400">
+            <span className="font-semibold tabular-nums text-zinc-100">{formatMoney(row.price, row.currency)}</span>{" "}
+            on Steam, {row.discountPercent}% off
+            {row.reviewPercent !== null && row.reviewCount !== null
+              ? ` · ${row.reviewPercent}% positive of ${row.reviewCount.toLocaleString("en-US")} reviews`
+              : ""}
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <a
+            href={`https://store.steampowered.com/app/${row.appid}/`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={primaryButton}
+          >
+            View on Steam
+            <span className="sr-only"> (opens in a new tab): {row.name}</span>
+          </a>
+          <button type="button" onClick={onClose} className={secondaryButton}>
+            Close<span className="sr-only"> details for {row.name}</span>
+          </button>
+        </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="min-w-0 space-y-5">
+          <PriceHistoryPanel appid={row.appid} eager />
+          {insights.isPending ? (
+            <div aria-busy="true" aria-label="Loading store prices" className="h-24 animate-pulse rounded-lg bg-zinc-800/60" />
+          ) : (
+            <StorePriceList
+              data={data?.prices ?? null}
+              steamPrice={row.price}
+              unavailable={!data || data.unavailable.includes("prices")}
+            />
+          )}
+        </div>
+        <div className="min-w-0">
+          <GameFactsPanel appid={row.appid} mode="full" insights={insights} maxTags={3} showFeatures={false} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** An element's client width, kept current as it resizes. Null until measured. */
+function useElementWidth(ref: { readonly current: HTMLElement | null }): number | null {
+  const [width, setWidth] = useState<number | null>(null);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const measure = () => setWidth(node.clientWidth);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [ref]);
+  return width;
+}
+
+type ChipTone = "emerald" | "lime" | "amber" | "sky" | "violet" | "zinc";
+const CHIP: Readonly<Record<ChipTone, string>> = {
+  emerald: "bg-emerald-400/15 text-emerald-300 ring-emerald-400/40",
+  lime: "bg-lime-400/10 text-lime-300 ring-lime-400/30",
+  amber: "bg-amber-400/10 text-amber-300 ring-amber-400/30",
+  sky: "bg-sky-400/10 text-sky-300 ring-sky-400/30",
+  violet: "bg-violet-400/10 text-violet-300 ring-violet-400/30",
+  zinc: "bg-zinc-800 text-zinc-400 ring-zinc-700",
+};
+
+function Chip({ tone, children }: { tone: ChipTone; children: ReactNode }) {
   return (
     <span
-      title={`In your backlog: ${detail}`}
-      className="inline-flex items-center gap-1.5 rounded-full bg-yellow-400/15 px-2.5 py-1 text-xs font-semibold text-yellow-300 ring-1 ring-yellow-400/40"
+      className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${CHIP[tone]}`}
     >
-      <svg aria-hidden="true" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
-        <path
-          fillRule="evenodd"
-          clipRule="evenodd"
-          d="M8.49 2.86c.67-1.15 2.35-1.15 3.02 0l6.26 10.75c.67 1.15-.17 2.6-1.51 2.6H3.74c-1.34 0-2.18-1.45-1.51-2.6L8.49 2.86ZM10 7a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-1.5 0v-3A.75.75 0 0 1 10 7Zm0 7a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
-        />
-      </svg>
-      <span>
-        <span className="sr-only">Backlog warning: </span>
-        You have {top.unplayedCount} unplayed {top.genre}{" "}
-        {top.unplayedCount === 1 ? "game" : "games"}
-        {matches.length > 1 ? <span className="sr-only">. All matches: {detail}</span> : null}
+      {children}
+    </span>
+  );
+}
+
+function Rating({
+  percent,
+  count,
+  label,
+}: {
+  percent: number | null;
+  count: number | null;
+  label: string | null;
+}) {
+  if (count !== null && count < STEAM_MIN_REVIEWS_FOR_SCORE) {
+    return (
+      <span className="text-xs text-zinc-500" title="Steam shows no score below 10 reviews">
+        {count === 0 ? "No reviews" : `${count} ${count === 1 ? "review" : "reviews"}`}
       </span>
+    );
+  }
+  if (percent === null) {
+    return (
+      <span className="text-zinc-600" title="Rating not loaded yet">
+        —
+      </span>
+    );
+  }
+  const tone =
+    percent >= 80 ? "text-emerald-300" : percent >= 70 ? "text-lime-300" : percent >= 40 ? "text-amber-300" : "text-rose-300";
+  return (
+    <span title={label ?? undefined}>
+      <span className={`font-semibold tabular-nums ${tone}`}>{percent}%</span>
+      {count !== null ? (
+        <span className="block text-xs tabular-nums text-zinc-500">
+          {compactNumber.format(count)} reviews
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+const compactNumber = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+
+function formatRelease(day: string | null): string {
+  if (!day) return "—";
+  const date = new Date(`${day}T00:00:00Z`);
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : date.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+}
+
+/** "in 3 days", "in 5 hours", or "—". Exact time in the tooltip. */
+function SaleEnds({ iso, now }: { iso: string | null; now: number }) {
+  if (!iso) return <span className="text-zinc-600">—</span>;
+  const ms = Date.parse(iso) - now;
+  if (!Number.isFinite(ms)) return <span className="text-zinc-600">—</span>;
+  const exact = new Date(iso).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const hours = ms / 3_600_000;
+  const text =
+    ms <= 0 ? "Ending" : hours < 24 ? `in ${Math.max(1, Math.round(hours))} h` : `in ${Math.round(hours / 24)} d`;
+  return (
+    <time dateTime={iso} title={exact} className={hours < 24 ? "font-medium text-amber-300" : undefined}>
+      {text}
+    </time>
+  );
+}
+
+/**
+ * One-tap watch from the table. Steam-wishlisted and watched games link to the
+ * wishlist page instead. Nothing is ever sent to Steam.
+ */
+function WatchToggle({ row, steamid }: { row: DealRow; steamid: string }) {
+  const queryClient = useQueryClient();
+  const watch = useMutation({
+    mutationFn: () => apiSend("POST", "/api/wishlist", { appid: row.appid }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["wishlist", steamid] }),
+  });
+
+  if (row.watched || row.wished || watch.isSuccess) {
+    return (
+      <Link
+        href="/wishlist"
+        className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs font-medium text-emerald-300 hover:bg-emerald-400/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+      >
+        <span aria-hidden="true">✓</span>
+        {row.watched || watch.isSuccess ? "Watching" : "Wishlisted"}
+        <span className="sr-only">: {row.name}. Open your wishlist</span>
+      </Link>
+    );
+  }
+
+  return (
+    <span className="inline-flex flex-col items-end">
+      <button
+        type="button"
+        onClick={() => watch.mutate()}
+        disabled={watch.isPending}
+        className="inline-flex min-h-9 items-center rounded-lg border border-zinc-700 px-2.5 text-xs font-medium text-zinc-200 transition-colors hover:border-emerald-400/60 hover:bg-emerald-400/10 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-60"
+      >
+        {watch.isPending ? "Adding…" : "Watch"}
+        <span className="sr-only">: {row.name}</span>
+      </button>
+      {watch.isError ? (
+        <span role="alert" className="mt-1 max-w-[12rem] whitespace-normal text-[11px] text-rose-300">
+          {describeWishlistAddError(watch.error, null)}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -387,22 +1251,22 @@ function BacklogWarningBadge({ deal }: { deal: Deal }) {
 
 function DealsSkeleton() {
   return (
-    <div aria-busy="true" aria-label="Loading deals" className="space-y-3">
-      <div className="h-12 animate-pulse rounded-2xl bg-zinc-900" />
-      {[0, 1, 2, 3].map((i) => (
-        <div
-          key={i}
-          className="flex flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-[#18181c] sm:flex-row"
-        >
-          <div className="aspect-[460/215] w-full shrink-0 animate-pulse bg-zinc-900 sm:m-4 sm:mr-0 sm:w-60 sm:self-start sm:rounded-xl" />
-          <div className="flex-1 space-y-3 p-4">
-            <div className="h-5 w-2/3 animate-pulse rounded bg-zinc-800" />
-            <div className="h-4 w-1/3 animate-pulse rounded bg-zinc-800" />
-            <div className="h-1.5 w-full animate-pulse rounded-full bg-zinc-800" />
-            <div className="h-4 w-1/2 animate-pulse rounded bg-zinc-800" />
-          </div>
+    <div aria-busy="true" aria-label="Loading deals" className="grid grid-cols-1 gap-6 lg:grid-cols-[14rem_minmax(0,1fr)] min-[90rem]:grid-cols-[16rem_minmax(0,1fr)]">
+      <div className="hidden h-[32rem] animate-pulse rounded-2xl border border-zinc-800 bg-[#131316] lg:block" />
+      <div>
+        <div className="h-12 animate-pulse rounded-2xl bg-zinc-900 lg:hidden" />
+        <div className="mt-3 h-6 w-48 animate-pulse rounded bg-zinc-800" />
+        <div className="mt-3 overflow-hidden rounded-2xl border border-zinc-800 bg-[#131316]">
+          {Array.from({ length: 8 }, (_, i) => (
+            <div key={i} className="flex items-center gap-3 border-b border-zinc-800/70 px-3 py-2 last:border-0">
+              <div className="h-[45px] w-[120px] shrink-0 animate-pulse rounded bg-zinc-800" />
+              <div className="h-4 flex-1 animate-pulse rounded bg-zinc-800" />
+              <div className="h-4 w-14 animate-pulse rounded bg-zinc-800" />
+              <div className="h-4 w-14 animate-pulse rounded bg-zinc-800" />
+            </div>
+          ))}
         </div>
-      ))}
+      </div>
     </div>
   );
 }

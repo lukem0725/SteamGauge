@@ -16,7 +16,7 @@ import { WishlistView } from "@/components/wishlist-view";
 import { getSessionUser } from "@/lib/auth/session";
 import { SESSION_COOKIE, SIGNED_OUT_PATH } from "@/lib/auth/shared";
 
-export const metadata: Metadata = { title: "Wishlist · SteamLite" };
+export const metadata: Metadata = { title: "Wishlist · SteamGauge" };
 
 // Depends on a cookie: never prerender or cache this page.
 export const dynamic = "force-dynamic";

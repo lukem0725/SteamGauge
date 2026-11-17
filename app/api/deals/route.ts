@@ -1,13 +1,21 @@
 /**
  * GET /api/deals
  *
- * Trending discounted games ranked by cost per hour (sale price divided by
- * completion time), cross-referenced with the signed-in user's unplayed
- * backlog. The work is in lib/deals.ts; every Steam read goes through the
- * cached-fetch pipeline.
+ * Every discounted game among Steam's global top 1,000 sellers, from
+ * Steam's own store query (IStoreQueryService/Query, 5 cached pages of 200),
+ * with Steam's price, discount, sale end, release date and review totals.
+ * IsThereAnyDeal adds, by Steam AppID, the historical lows behind the price
+ * badges and the cheapest current price at another store. The work is in
+ * lib/deals.ts; every Steam and ITAD read goes through the cached-fetch
+ * pipeline. Rows are ranked in the browser by log10(reviews) x discount %.
  *
- * Requires a session: the ranking is the same for everyone, but the
- * "owned" flags and backlog warnings are personal.
+ * Review totals missing from Steam's batched store data are filled in from a
+ * shared per-app cache plus at most 30 GetAppReviews lookups per request
+ * (lib/steam/review-backfill.ts). The response waits at most about 2.5 s for
+ * those; lookups still running finish after it via `after`.
+ *
+ * Requires a session: the deal list is the same for everyone, but the
+ * owned / wished / watched flags are personal.
  *
  * Requires Next.js 15.1 or later (`after`).
  */
@@ -20,6 +28,8 @@ import { buildDeals } from "@/lib/deals";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+/** Room for background review lookups to finish after the response (seconds). */
+export const maxDuration = 30;
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {

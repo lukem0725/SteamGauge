@@ -3,21 +3,37 @@
 /**
  * components/wishlist-view.tsx
  *
- * The personal price watchlist.
+ * The wishlist: the user's live Steam wishlist merged with their SteamGauge
+ * watchlist, with current prices, historical lows and price history.
+ *
+ * Steam wishlist entries are read-only here; changes are never sent to Steam.
+ * "Watch" adds a game to the SteamGauge watchlist (stored in Supabase), which
+ * also lets you keep a note on it and tracks its price daily.
  *
  *   GET    /api/wishlist                   tracked games with current prices
  *   POST   /api/wishlist                   track a game
  *   DELETE /api/wishlist/[appid]           stop tracking
- *   GET    /api/wishlist/[appid]/history   recorded prices, loaded per card
+ *   GET    /api/wishlist/[appid]/history   price history, loaded per card
  *                                          once that card scrolls into view
+ *   GET    /api/apps/[appid]/insights?mode=card
+ *                                          live players, developer, publisher,
+ *                                          franchise, tags; also per card, in view
  *
  * Mobile-first: laid out for a 360px portrait screen, widening at sm/lg.
  * Only types are imported from server-only modules.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useId, useState, type ChangeEvent, type FormEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 
-import { PriceHistoryChart, formatDay } from "@/components/price-history-chart";
+import { GameFactsPanel, PriceHistoryPanel } from "@/components/game-insights";
 import {
   DataAgeTicker,
   ErrorState,
@@ -26,19 +42,33 @@ import {
   formatMoney,
   primaryButton,
   secondaryButton,
-  useInViewOnce,
 } from "@/components/ui-kit";
+import { pageContainer } from "@/components/layout-width";
 import { apiGet, apiSend } from "@/lib/api/client";
 import type { SessionUser } from "@/lib/auth/session";
-import type { PriceHistory } from "@/lib/price-history";
 import type { WishlistItem, WishlistPayload } from "@/lib/wishlist";
+import {
+  DEFAULT_WISHLIST_SORT,
+  WISHLIST_SORTS,
+  isWishlistSort,
+  sortWishlist,
+  type WishlistSort,
+} from "@/lib/wishlist-sort";
 
 /** After a stale answer, re-check this many times for the refreshed data. */
 const STALE_RECHECK_LIMIT = 2;
 const STALE_RECHECK_MS = 4_000;
 
-/** Must match MIN_DAYS_FOR_LOW_CLAIM in lib/price-history.ts. */
-const DAYS_NEEDED_FOR_LOW = 7;
+
+/** Cards rendered per "Show more" step. Each loads its chart when visible. */
+const PAGE_STEP = 20;
+
+const STEAM_PRIVACY_SETTINGS_URL = "https://steamcommunity.com/my/edit/settings";
+
+/** Remembers the chosen sort in this browser. A convenience only. */
+const SORT_STORAGE_KEY = "steamgauge.wishlist.sort";
+/** Where the choice was saved before the rename to SteamGauge. Read once, if present. */
+const LEGACY_SORT_STORAGE_KEY = "steaml" + "ite.wishlist.sort";
 
 // =============================================================================
 // Entry point
@@ -49,12 +79,37 @@ export interface WishlistViewProps {
   readonly user: SessionUser;
 }
 
+/** Moved to components/game-insights.tsx; re-exported for existing imports. */
+export { LowStatusLine } from "@/components/game-insights";
+
 export function WishlistView({ user }: WishlistViewProps) {
   return <Wishlist user={user} />;
 }
 
 function Wishlist({ user }: WishlistViewProps) {
   const queryKey = ["wishlist", user.steamid] as const;
+  const [limit, setLimit] = useState(PAGE_STEP);
+  const [sort, setSort] = useState<WishlistSort>(DEFAULT_WISHLIST_SORT);
+
+  // Read the saved choice after mount, so server and first client render match.
+  useEffect(() => {
+    try {
+      const saved =
+        window.localStorage.getItem(SORT_STORAGE_KEY) ??
+        window.localStorage.getItem(LEGACY_SORT_STORAGE_KEY);
+      if (isWishlistSort(saved)) setSort(saved);
+    } catch {
+      // Storage blocked (private mode, embedded view): keep the default.
+    }
+  }, []);
+  const chooseSort = (next: WishlistSort) => {
+    setSort(next);
+    try {
+      window.localStorage.setItem(SORT_STORAGE_KEY, next);
+    } catch {
+      // Not saved; the choice still applies for this visit.
+    }
+  };
 
   const wishlist = useQuery({
     queryKey,
@@ -69,19 +124,21 @@ function Wishlist({ user }: WishlistViewProps) {
 
   const result = wishlist.data;
   const payload = result?.status === "ok" ? result.data : null;
-  const items = payload ? sortForDisplay(payload.items) : [];
+  const items = useMemo(() => sortWishlist(payload?.items ?? [], sort), [payload?.items, sort]);
   const onSale = items.filter(isOnSale).length;
+  const fromSteam = items.filter((item) => item.onSteamWishlist).length;
+  const shown = items.slice(0, limit);
 
   return (
     <div className="bg-zinc-950 text-zinc-100 antialiased">
-      <div className="mx-auto w-full max-w-5xl px-4 pb-12 pt-5 sm:px-6 lg:px-8">
+      <div className={pageContainer}>
         <header className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h1 className="text-2xl font-semibold tracking-tight text-zinc-50">Wishlist</h1>
             <p className="mt-1 text-sm text-zinc-400">
               {payload && items.length > 0
-                ? `${onSale} of ${items.length} on sale right now.`
-                : "Games you are watching for a price drop."}
+                ? `${items.length} ${items.length === 1 ? "game" : "games"} · ${onSale} on sale right now.`
+                : "Your Steam wishlist and the games you watch here."}
             </p>
           </div>
           <div className="pt-1">
@@ -90,9 +147,11 @@ function Wishlist({ user }: WishlistViewProps) {
         </header>
 
         <main className="mt-6 space-y-4">
+          {payload ? <SyncNotice payload={payload} fromSteam={fromSteam} /> : null}
+
           <AddGameForm
             queryKey={queryKey}
-            full={payload !== null && items.length >= payload.limit}
+            full={payload !== null && payload.watchedCount >= payload.limit}
             limit={payload?.limit ?? null}
           />
 
@@ -108,21 +167,53 @@ function Wishlist({ user }: WishlistViewProps) {
           ) : items.length === 0 ? (
             <StatePanel tone="neutral" title="Nothing on your wishlist yet">
               <p>
-                Paste a Steam store link or an App ID above to start watching a game. We check
-                its price every day and show you when it drops.
+                Wishlist games on Steam and they appear here within about 30 minutes, or paste a
+                Steam store link above to watch a game in SteamGauge only.
               </p>
             </StatePanel>
           ) : (
             <>
-              <ul aria-label="Watched games" className="space-y-3">
-                {items.map((item) => (
+              <SortToolbar
+                sort={sort}
+                onSort={chooseSort}
+                shown={shown.length}
+                total={items.length}
+                reviewsPending={payload?.reviewsPending ?? 0}
+              />
+              <ul aria-label="Wishlist games" className="space-y-3">
+                {shown.map((item) => (
                   <WishlistCard key={item.appid} item={item} queryKey={queryKey} />
                 ))}
               </ul>
+              {items.length > shown.length ? (
+                <div className="flex justify-center pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setLimit((current) => current + PAGE_STEP)}
+                    className={secondaryButton}
+                  >
+                    Show {Math.min(PAGE_STEP, items.length - shown.length)} more
+                    <span className="sr-only"> wishlist games</span>
+                  </button>
+                </div>
+              ) : null}
               <p className="pt-2 text-xs leading-relaxed text-zinc-500">
-                Prices are current US store prices. History is what SteamLite has recorded since
-                it first saw each game, so &ldquo;lowest recorded&rdquo; is not the lowest price
-                the game has ever had.
+                Prices are current US Steam prices. Steam wishlist entries are read-only here:
+                watching, notes and removals stay in SteamGauge and are never sent to Steam.
+                {payload?.lowsAvailable ? (
+                  <>
+                    {" "}Historical lows and price history from{" "}
+                    <a
+                      href="https://isthereanydeal.com/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline decoration-zinc-700 underline-offset-2 hover:text-zinc-300"
+                    >
+                      IsThereAnyDeal
+                    </a>
+                    .
+                  </>
+                ) : null}
               </p>
             </>
           )}
@@ -132,16 +223,90 @@ function Wishlist({ user }: WishlistViewProps) {
   );
 }
 
+/** The sort menu above the list, with how many games are shown. */
+function SortToolbar({
+  sort,
+  onSort,
+  shown,
+  total,
+  reviewsPending,
+}: {
+  sort: WishlistSort;
+  onSort: (sort: WishlistSort) => void;
+  shown: number;
+  total: number;
+  reviewsPending: number;
+}) {
+  const id = useId();
+  return (
+    <div className="flex flex-col gap-2 rounded-2xl border border-zinc-800 bg-[#131316] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 items-center gap-3">
+        <label htmlFor={id} className="shrink-0 text-sm font-medium text-zinc-300">
+          Sort by
+        </label>
+        <select
+          id={id}
+          value={sort}
+          onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+            if (isWishlistSort(event.target.value)) onSort(event.target.value);
+          }}
+          className="min-h-11 w-full min-w-0 rounded-xl border border-zinc-700 bg-zinc-900 px-3 text-sm text-zinc-100 focus-visible:border-emerald-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/40 sm:w-60"
+        >
+          {WISHLIST_SORTS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p aria-live="polite" className="text-xs text-zinc-500 sm:text-right">
+        Showing <span className="tabular-nums text-zinc-300">{shown}</span> of{" "}
+        <span className="tabular-nums text-zinc-300">{total}</span>
+        {sort === "rating-desc" && reviewsPending > 0
+          ? ` · ${reviewsPending} ${reviewsPending === 1 ? "rating" : "ratings"} still loading`
+          : null}
+      </p>
+    </div>
+  );
+}
+
 function isOnSale(item: WishlistItem): boolean {
   return item.priceStatus === "priced" && (item.price?.discountPercent ?? 0) > 0;
 }
 
-/** Discounted games first, deepest discount on top; the rest keep server order (newest first). */
-function sortForDisplay(items: readonly WishlistItem[]): WishlistItem[] {
-  return [...items].sort(
-    (a, b) =>
-      Number(isOnSale(b)) - Number(isOnSale(a)) ||
-      (b.price?.discountPercent ?? 0) - (a.price?.discountPercent ?? 0),
+/** Where the list comes from, and what to do when Steam returned nothing. */
+function SyncNotice({ payload, fromSteam }: { payload: WishlistPayload; fromSteam: number }) {
+  if (payload.steamStatus === "ok") {
+    return (
+      <p className="flex items-center gap-2 text-sm text-zinc-400">
+        <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+        Synced from your Steam wishlist: {fromSteam} {fromSteam === 1 ? "game" : "games"}.
+      </p>
+    );
+  }
+  if (payload.steamStatus === "unavailable") {
+    return (
+      <p className="rounded-2xl border border-zinc-800 bg-[#131316] px-4 py-3 text-sm text-zinc-400">
+        Steam could not be reached just now, so only games you watch in SteamGauge are shown.
+      </p>
+    );
+  }
+  return (
+    <div className="rounded-2xl border border-amber-400/25 bg-amber-400/5 px-4 py-3 text-sm leading-relaxed text-zinc-300">
+      <p>
+        <strong className="font-medium text-amber-200">Steam returned no wishlist.</strong> It is
+        either empty or private. Steam shows your wishlist to apps only when your profile&rsquo;s{" "}
+        <strong className="font-medium text-zinc-100">Game details</strong> are public.
+      </p>
+      <a
+        href={STEAM_PRIVACY_SETTINGS_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-1 inline-flex min-h-9 items-center font-medium text-amber-200 underline decoration-amber-400/40 underline-offset-2 hover:decoration-amber-300"
+      >
+        Open Steam privacy settings
+      </a>
+    </div>
   );
 }
 
@@ -202,7 +367,7 @@ function AddGameForm({
       className="rounded-2xl border border-zinc-800 bg-[#131316] p-4"
     >
       <label htmlFor={inputId} className="text-sm font-medium text-zinc-200">
-        Watch a game
+        Watch a game in SteamGauge
       </label>
       <div className="mt-2 flex flex-col gap-2 sm:flex-row">
         <input
@@ -224,7 +389,7 @@ function AddGameForm({
           className="min-h-11 w-full min-w-0 flex-1 rounded-xl border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus-visible:border-emerald-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/40 disabled:cursor-not-allowed disabled:opacity-60"
         />
         <button type="submit" disabled={add.isPending || full} className={primaryButton}>
-          {add.isPending ? "Adding…" : "Add to wishlist"}
+          {add.isPending ? "Adding…" : "Watch"}
         </button>
       </div>
       {message ? (
@@ -233,7 +398,8 @@ function AddGameForm({
         </p>
       ) : full ? (
         <p className="mt-2 text-sm text-zinc-400">
-          Your wishlist is full{limit ? ` (${limit} games)` : ""}. Remove one to add another.
+          Your SteamGauge watchlist is full{limit ? ` (${limit} games)` : ""}. Stop watching one to
+          add another.
         </p>
       ) : null}
     </form>
@@ -241,23 +407,31 @@ function AddGameForm({
 }
 
 // =============================================================================
-// One watched game
+// One wishlist game
 // =============================================================================
 
 function WishlistCard({ item, queryKey }: { item: WishlistItem; queryKey: readonly unknown[] }) {
   const queryClient = useQueryClient();
-  const remove = useMutation({
+  const refresh = () => {
+    // The deals table shows which games are watched, so refresh it too.
+    void queryClient.invalidateQueries({ queryKey: ["deals"] });
+    return queryClient.invalidateQueries({ queryKey });
+  };
+  const watch = useMutation({
+    mutationFn: () => apiSend("POST", "/api/wishlist", { appid: item.appid }),
+    onSuccess: refresh,
+  });
+  const unwatch = useMutation({
     mutationFn: () => apiSend("DELETE", `/api/wishlist/${item.appid}`),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["deals"] });
-      return queryClient.invalidateQueries({ queryKey });
-    },
+    onSuccess: refresh,
   });
 
   return (
     <li className="relative overflow-hidden rounded-2xl border border-zinc-800 bg-[#18181c]">
       <div className="flex flex-col sm:flex-row">
-        <div className="relative aspect-[460/215] w-full shrink-0 overflow-hidden bg-zinc-900 sm:m-4 sm:mr-0 sm:w-60 sm:self-start sm:rounded-xl">
+        {/* Left column: header image, and the game's facts directly under it. */}
+        <div className="shrink-0 sm:m-4 sm:mr-0 sm:w-64 sm:self-start lg:w-72">
+        <div className="relative aspect-[460/215] w-full overflow-hidden bg-zinc-900 sm:rounded-xl">
           {item.headerImage ? (
             // Steam CDN image; a plain <img> avoids next/image remote configuration.
             // eslint-disable-next-line @next/next/no-img-element
@@ -276,6 +450,10 @@ function WishlistCard({ item, queryKey }: { item: WishlistItem; queryKey: readon
             </div>
           )}
         </div>
+        <div className="border-b border-zinc-800 px-4 py-4 sm:border-b-0 sm:px-0 sm:pb-0">
+          <GameFactsPanel appid={item.appid} mode="card" />
+        </div>
+        </div>
 
         <div className="flex min-w-0 flex-1 flex-col p-4">
           <div className="flex items-start justify-between gap-3">
@@ -285,7 +463,24 @@ function WishlistCard({ item, queryKey }: { item: WishlistItem; queryKey: readon
             <DiscountBadge item={item} />
           </div>
 
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {item.onSteamWishlist ? (
+              <SourceChip tone="violet">
+                Steam wishlist{item.steamPriority ? ` #${item.steamPriority}` : ""}
+              </SourceChip>
+            ) : null}
+            {item.watched ? <SourceChip tone="emerald">Watching</SourceChip> : null}
+            {item.comingSoon ? <SourceChip tone="zinc">Coming soon</SourceChip> : null}
+            {item.reviewPercent !== null ? (
+              <SourceChip tone="zinc">
+                {item.reviewPercent}% positive
+                {item.reviewCount ? ` · ${item.reviewCount.toLocaleString("en-US")} reviews` : ""}
+              </SourceChip>
+            ) : null}
+          </div>
+
           <CurrentPrice item={item} />
+          <LowsLine item={item} />
 
           {item.note ? (
             <p className="mt-2 break-words text-sm text-zinc-400">
@@ -294,9 +489,35 @@ function WishlistCard({ item, queryKey }: { item: WishlistItem; queryKey: readon
             </p>
           ) : null}
 
-          {item.priceStatus === "free" ? null : <PriceHistoryPanel appid={item.appid} />}
+          {item.priceStatus === "free" ? null : (
+            <div className="mt-4 border-t border-zinc-800 pt-3">
+              <PriceHistoryPanel appid={item.appid} />
+            </div>
+          )}
+
 
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            {item.watched ? (
+              <button
+                type="button"
+                onClick={() => unwatch.mutate()}
+                disabled={unwatch.isPending}
+                className="inline-flex min-h-11 items-center justify-center rounded-xl px-4 text-sm font-medium text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {unwatch.isPending ? "Removing…" : item.onSteamWishlist ? "Stop watching" : "Remove"}
+                <span className="sr-only"> {item.name}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => watch.mutate()}
+                disabled={watch.isPending}
+                className={primaryButton}
+              >
+                {watch.isPending ? "Adding…" : "Watch in SteamGauge"}
+                <span className="sr-only">: {item.name}</span>
+              </button>
+            )}
             <a
               href={`https://store.steampowered.com/app/${item.appid}`}
               target="_blank"
@@ -306,19 +527,20 @@ function WishlistCard({ item, queryKey }: { item: WishlistItem; queryKey: readon
               View on Steam
               <span className="sr-only"> (opens in a new tab): {item.name}</span>
             </a>
-            <button
-              type="button"
-              onClick={() => remove.mutate()}
-              disabled={remove.isPending}
-              className="inline-flex min-h-11 items-center justify-center rounded-xl px-4 text-sm font-medium text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {remove.isPending ? "Removing…" : "Remove"}
-              <span className="sr-only"> {item.name} from wishlist</span>
-            </button>
           </div>
-          {remove.isError ? (
+          {watch.isError ? (
             <p role="alert" className="mt-2 text-sm text-rose-300">
-              Could not remove this game. Try again.
+              {describeWishlistAddError(watch.error, null)}
+            </p>
+          ) : null}
+          {unwatch.isError ? (
+            <p role="alert" className="mt-2 text-sm text-rose-300">
+              Could not stop watching this game. Try again.
+            </p>
+          ) : null}
+          {item.onSteamWishlist && !item.watched ? (
+            <p className="mt-2 text-xs text-zinc-500">
+              To remove it from your Steam wishlist, use Steam. SteamGauge never changes it.
             </p>
           ) : null}
         </div>
@@ -327,11 +549,28 @@ function WishlistCard({ item, queryKey }: { item: WishlistItem; queryKey: readon
   );
 }
 
+function SourceChip({ tone, children }: { tone: "violet" | "emerald" | "zinc"; children: ReactNode }) {
+  const styles = {
+    violet: "bg-violet-400/10 text-violet-300 ring-violet-400/30",
+    emerald: "bg-emerald-400/10 text-emerald-300 ring-emerald-400/30",
+    zinc: "bg-zinc-800/70 text-zinc-400 ring-zinc-700",
+  }[tone];
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${styles}`}>
+      {children}
+    </span>
+  );
+}
+
 /** Discount status as a labelled badge, never colour alone. */
 function DiscountBadge({ item }: { item: WishlistItem }) {
   const base = "shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ring-1";
   if (item.priceStatus === "unavailable") {
-    return <span className={`${base} bg-zinc-800/60 text-zinc-400 ring-zinc-700`}>Price unavailable</span>;
+    return (
+      <span className={`${base} bg-zinc-800/60 text-zinc-400 ring-zinc-700`}>
+        {item.comingSoon ? "Not released" : "Price unavailable"}
+      </span>
+    );
   }
   if (item.priceStatus === "free") {
     return <span className={`${base} bg-sky-400/10 text-sky-300 ring-sky-400/30`}>Free to play</span>;
@@ -349,8 +588,9 @@ function DiscountBadge({ item }: { item: WishlistItem }) {
 function CurrentPrice({ item }: { item: WishlistItem }) {
   if (item.priceStatus !== "priced" || !item.price) return null;
   const { price } = item;
+  const ends = item.saleEndsAt ? new Date(item.saleEndsAt) : null;
   return (
-    <p className="mt-2 flex items-baseline gap-2">
+    <p className="mt-2 flex flex-wrap items-baseline gap-x-2">
       <span className="text-2xl font-semibold tabular-nums tracking-tight text-zinc-50">
         {formatMoney(price.final, price.currency)}
       </span>
@@ -360,106 +600,48 @@ function CurrentPrice({ item }: { item: WishlistItem }) {
           {formatMoney(price.initial, price.currency)}
         </s>
       ) : null}
+      {price.discountPercent > 0 && ends && !Number.isNaN(ends.getTime()) ? (
+        <span className="text-xs text-zinc-500">
+          Sale ends{" "}
+          <time dateTime={item.saleEndsAt ?? undefined}>
+            {ends.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+          </time>
+        </span>
+      ) : null}
     </p>
   );
 }
 
-// =============================================================================
-// Price history
-// =============================================================================
-
-function PriceHistoryPanel({ appid }: { appid: number }) {
-  const [ref, inView] = useInViewOnce<HTMLDivElement>();
-
-  const history = useQuery({
-    queryKey: ["wishlist", "history", appid],
-    queryFn: ({ signal }) => apiGet<PriceHistory>(`/api/wishlist/${appid}/history`, signal),
-    enabled: inView,
-    staleTime: 10 * 60_000,
-    retry: false,
-  });
-
-  const data = history.data?.status === "ok" ? history.data.data : null;
-
+/** Historical lows from IsThereAnyDeal, beside the current price. */
+function LowsLine({ item }: { item: WishlistItem }) {
+  const lows = item.lows;
+  if (!lows || (lows.steamLow === null && lows.yearLowAnyStore === null)) return null;
+  const current = item.price?.final ?? null;
+  const atLow = current !== null && lows.steamLow !== null && current <= lows.steamLow;
   return (
-    <div ref={ref} className="mt-4 border-t border-zinc-800 pt-3">
-      <h3 className="text-xs font-medium uppercase tracking-wider text-zinc-500">Price history</h3>
-      {!inView || history.isPending ? (
-        <div aria-busy="true" aria-label="Loading price history" className="mt-2">
-          <div className="h-4 w-48 animate-pulse rounded bg-zinc-800" />
-          <div className="mt-3 h-28 animate-pulse rounded-md bg-zinc-800/60" />
-        </div>
-      ) : !data ? (
-        <p className="mt-2 text-sm text-zinc-500">Price history could not be loaded.</p>
-      ) : (
-        <>
-          <LowStatusLine history={data} />
-          <div className="mt-3">
-            <PriceHistoryChart history={data} />
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/**
- * States plainly whether the current price is the lowest SteamLite has
- * recorded. The claim is only made with a week or more of history; before
- * that, any price is trivially the "lowest" and saying so would mislead.
- */
-export function LowStatusLine({ history }: { history: PriceHistory }) {
-  const currency = history.currency ?? "USD";
-  const since = history.firstObservedOn ? formatDay(history.firstObservedOn) : null;
-
-  if (history.lowStatus === "at_low" && history.lowest) {
-    return (
-      <p className="mt-2 flex items-start gap-2 text-sm text-zinc-200">
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 20 20"
-          fill="#0ca30c"
-          className="mt-0.5 h-4 w-4 shrink-0"
-        >
-          <path
-            fillRule="evenodd"
-            clipRule="evenodd"
-            d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm3.7-9.3a1 1 0 0 0-1.4-1.4L9 10.6 7.7 9.3a1 1 0 0 0-1.4 1.4l2 2a1 1 0 0 0 1.4 0l4-4Z"
-          />
-        </svg>
+    <p className="mt-1 text-xs text-zinc-400">
+      {lows.steamLow !== null ? (
         <span>
-          <strong className="font-semibold text-zinc-50">Lowest price we have recorded.</strong>{" "}
-          <span className="text-zinc-400">
-            {history.observedDays} days tracked{since ? `, since ${since}` : ""}.
+          Steam all-time low{" "}
+          <span className={`font-semibold tabular-nums ${atLow ? "text-emerald-300" : "text-zinc-200"}`}>
+            {formatMoney(lows.steamLow, "USD")}
+          </span>
+          {atLow ? <span className="text-emerald-300"> · at its low now</span> : null}
+        </span>
+      ) : null}
+      {lows.steamLow !== null && lows.yearLowAnyStore !== null ? (
+        <span aria-hidden="true" className="mx-1.5 text-zinc-700">·</span>
+      ) : null}
+      {lows.yearLowAnyStore !== null ? (
+        <span>
+          1-year low, any store{" "}
+          <span className="font-semibold tabular-nums text-zinc-200">
+            {formatMoney(lows.yearLowAnyStore, "USD")}
           </span>
         </span>
-      </p>
-    );
-  }
-
-  if (history.lowStatus === "above_low" && history.lowest && history.currentFinal !== null) {
-    const above = history.currentFinal - history.lowest.final;
-    return (
-      <p className="mt-2 text-sm text-zinc-300">
-        <strong className="font-semibold text-zinc-100">Not the lowest we have recorded.</strong>{" "}
-        <span className="text-zinc-400">
-          It was {formatMoney(history.lowest.final, currency)} on {formatDay(history.lowest.date)},{" "}
-          {formatMoney(above, currency)} less than now.
-        </span>
-      </p>
-    );
-  }
-
-  if (history.lowStatus === "insufficient_history") {
-    return (
-      <p className="mt-2 text-sm text-zinc-400">
-        {since ? `Tracking since ${since}. ` : "Tracking has just started. "}
-        {history.observedDays} of {DAYS_NEEDED_FOR_LOW} days recorded before we can call a low.
-      </p>
-    );
-  }
-
-  return <p className="mt-2 text-sm text-zinc-400">This game has no price to compare right now.</p>;
+      ) : null}
+    </p>
+  );
 }
 
 // =============================================================================
@@ -474,7 +656,7 @@ function WishlistSkeleton() {
           key={i}
           className="flex flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-[#18181c] sm:flex-row"
         >
-          <div className="aspect-[460/215] w-full shrink-0 animate-pulse bg-zinc-900 sm:m-4 sm:mr-0 sm:w-60 sm:self-start sm:rounded-xl" />
+          <div className="aspect-[460/215] w-full shrink-0 animate-pulse bg-zinc-900 sm:m-4 sm:mr-0 sm:w-64 sm:self-start sm:rounded-xl lg:w-72" />
           <div className="flex-1 space-y-3 p-4">
             <div className="h-5 w-2/3 animate-pulse rounded bg-zinc-800" />
             <div className="h-7 w-24 animate-pulse rounded bg-zinc-800" />

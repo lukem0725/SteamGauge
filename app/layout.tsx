@@ -12,7 +12,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SteamLite",
+  title: "SteamGauge",
   description: "See your Steam library, backlog, deals and price drops at a glance.",
 };
 

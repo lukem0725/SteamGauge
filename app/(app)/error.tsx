@@ -9,6 +9,7 @@
  * The error's message is never shown: it can contain internal detail. Next.js
  * logs the full error on the server, tagged with `digest`.
  */
+import { pageContainer } from "@/components/layout-width";
 import { StatePanel, primaryButton, secondaryButton } from "@/components/ui-kit";
 
 export default function AppError({
@@ -19,7 +20,7 @@ export default function AppError({
   reset: () => void;
 }) {
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 pb-12 pt-5 sm:px-6 lg:px-8">
+    <div className={pageContainer}>
       <StatePanel
         tone="rose"
         title="This page could not be loaded"

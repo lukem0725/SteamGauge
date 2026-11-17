@@ -24,7 +24,7 @@ import { getSessionUser, type SessionUser } from "@/lib/auth/session";
 import { SESSION_COOKIE, SIGNED_OUT_PATH } from "@/lib/auth/shared";
 import { getPlayerSummary } from "@/lib/steam/endpoints";
 
-export const metadata: Metadata = { title: "Dashboard · SteamLite" };
+export const metadata: Metadata = { title: "Dashboard · SteamGauge" };
 
 // Depends on a cookie: never prerender or cache this page.
 export const dynamic = "force-dynamic";

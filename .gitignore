@@ -16,7 +16,7 @@ next-env.d.ts
 .vercel
 
 # backups written by generate-project.js when it replaces a file
-/.steamlite-backup/
+/.steamgauge-backup/
 
 # misc
 .DS_Store

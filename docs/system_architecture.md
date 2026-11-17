@@ -1,9 +1,9 @@
-# SteamLite — System Architecture
+# SteamGauge — System Architecture
 
 | | |
 |---|---|
-| **Status** | v1.2, schema deployed; catalog population and tracked-app/search endpoints decided; core `lib/` modules implemented |
-| **Date** | 2026-11-14 |
+| **Status** | v1.7.1: Wishlist cards show Genres (fetched, cached) · v1.7: wider layout (1600px) on every tab; Wishlist facts under the image; Deals dropdown with header image, 3 tags, no Features; title text is the row toggle |
+| **Date** | 2026-11-16 (v1.3–v1.5 earlier the same day; v1.2: 2026-11-14) |
 | **Scope** | Technical core, data model, Steam data caching strategy, security configuration |
 | **Schema source** | `steamlite_init.sql` (applied in Supabase 2026-11-14). Sections 4.4 and 5.6 mirror it. |
 | **Stack** | React, Tailwind CSS, Next.js (Route Handlers as serverless functions), Supabase (Postgres) |
@@ -12,7 +12,9 @@
 
 ## 1. Summary
 
-SteamLite is a mobile-first companion web app that shows Steam profile, library, achievement, friend, and store data. The browser never talks to Steam. Every Steam request goes through our Next.js serverless layer, which holds the API key, validates input, and answers from a Supabase-backed cache whenever possible.
+*Renamed from SteamLite to SteamGauge on 2026-11-16 (v1.6). The two applied migrations keep their original filenames (`0001_steamlite_init.sql`), so Supabase's migration history is unchanged.*
+
+SteamGauge is a mobile-first companion web app that shows Steam profile, library, achievement, friend, and store data. The browser never talks to Steam. Every Steam request goes through our Next.js serverless layer, which holds the API key, validates input, and answers from a Supabase-backed cache whenever possible.
 
 Three decisions define the system:
 
@@ -37,6 +39,7 @@ Three decisions define the system:
 | Steam Web API | `api.steampowered.com` | API key (query param) | 100,000 calls/day per key | Official, Steam Web API Terms of Use |
 | Storefront API | `store.steampowered.com/api` | None | About 200 requests per 5 minutes per IP | Unofficial, community-observed; undocumented and can change |
 | Steam OpenID | `steamcommunity.com/openid` | None | Not published | n/a |
+| IsThereAnyDeal API (optional) | `api.isthereanydeal.com` | API key in the `ITAD-API-Key` header | 1,000 requests per 5 minutes per key | Official, ITAD API docs |
 
 Implications:
 
@@ -45,7 +48,15 @@ Implications:
 - Steam returns 429 without a reliable `Retry-After`. We back off on our own schedule.
 - Private profiles return empty or 401/403 responses. That is a valid answer to cache, not an error to retry.
 
-Our self-imposed ceilings sit below the real ones: **80,000/day** for the Web API and **150 per 5 minutes** for the Storefront API.
+Our self-imposed ceilings sit below the real ones: **80,000/day** for the Web API, **150 per 5 minutes** for the Storefront API, and **600 per 5 minutes** for ITAD (450 for background refreshes).
+
+`IStoreQueryService/Query/v1` (v1.5) takes our key like other Web API methods. It is Steam's own store query and is the source of the deals pool: filters include `price_filters.min_discount_percent` and `global_top_n_sellers`, and with a `data_request` it returns full store items (the same objects as `GetItems`) for up to 1,000 apps per call. It is undocumented by Valve; field names follow the community documentation in section 10.
+
+Three Web API services added in v1.3–v1.4 need no key and no Storefront budget, but are charged to the `webapi` bucket like every other call:
+
+- `IWishlistService/GetWishlist/v1` returns `{appid, priority, date_added}` per wishlisted app. A private wishlist and an empty one give the same empty response, so the UI cannot tell them apart and says so.
+- `IStoreBrowseService/GetItems/v1` returns name, images, release date, review summary and current purchase option (with the sale end time) for up to 50 apps per call. It replaces per-app `appdetails` calls for list views and is the main source of review totals.
+- `IUserReviewsService/GetAppReviews/v1` returns one app's review totals (`query_summary.total_reviews`, `total_positive`, `review_score_desc`). Valve retired `store.steampowered.com/appreviews/{appid}?json=1` on 2026-10-22 (it now redirects to the store front page), and this is its replacement. We call it **without our key**: Steam documents the key as optional and meant for the app's own publisher. Anonymous callers share a lower Steam-side limit (HTTP 429 when exceeded), and responses may be up to 10 minutes old. It is used only for apps `GetItems` left without review data (section 5.4).
 
 ---
 
@@ -86,11 +97,43 @@ Our self-imposed ceilings sit below the real ones: **80,000/day** for the Web AP
 - **TanStack Query** in Client Components for interactive data. It gives us the L0 cache: in-memory dedupe, `staleTime` per resource, and background refetch. `refetchOnWindowFocus` is disabled for Steam data so tab switching does not generate traffic.
 - **Tailwind, mobile-first.** Base styles target about 360px wide; `sm:`/`md:`/`lg:` add layout for larger screens. Touch targets are at least 44px. Long lists (libraries with 1,000+ games) are virtualized.
 - **Images** come from Steam's CDN hosts through `next/image` with an explicit `remotePatterns` allowlist. Image requests do not count against API limits.
+- **Page width (v1.7).** Every signed-in tab, the navigation bar, and the loading and error screens share one width from `components/layout-width.ts` (`max-w-[1600px]`, same side padding as before). It is a plain module so Server Components (`loading.tsx`) can import it. Dashboard grids add columns at `xl`/`2xl` so cards keep their proportions instead of stretching.
 - **App shell.** `app/(app)/layout.tsx` wraps every signed-in page with the dark page surface, the navigation, and one shared TanStack Query client, so data loaded on one page survives navigation and an action on one page can refresh another (watching a game from Deals refreshes the Wishlist, and the reverse). Navigation (`components/app-nav.tsx`) links Dashboard, Deals, and Wishlist: a sticky top bar at 640px and wider, and a fixed bottom tab bar on phones. The current page is marked with `aria-current="page"` as well as colour. The layout does not check the session; each page does, because layouts are not re-rendered on every navigation. `loading.tsx` and `error.tsx` in the same folder keep the wait and failure screens in the same dark design; the error screen never shows the error's message.
-- **Dashboard** (`/dashboard`). One library request drives the Library Health banner and the Backlog Guardian deck (games with exactly 0 minutes played, at most 24 cards). Each card looks up its store price only when it scrolls into view, so a visit costs at most 24 Storefront lookups, each shared by all users for 24 hours. The card's value rating divides the current US store price by a game length that is **simulated** from the AppID and labelled as such in the UI; there is no real length data source yet. After a stale answer the client re-checks at most twice, 4 seconds apart, then stops.
-- **Deals** (`/deals`). One request to `GET /api/deals` returns trending discounted games (Steam's "Specials" list plus any top seller on sale) already scored and ranked by cost per hour: sale price divided by completion time, lower is better. The completion time is the same **simulated** figure the dashboard uses (`lib/value.ts`), so the ranking is illustrative until a real length source exists. Each deal carries a `watched` flag from the user's wishlist and offers a one-tap "Watch this game" button (hidden for owned games) that becomes an "In wishlist" link. Each deal is cross-referenced with the user's library: owned games are flagged, and a yellow warning badge appears when the user does not own the game but has unplayed games in one of its genres. Backlog genres come from the first 24 unplayed games by name (the same ones the dashboard deck shows), so a cold request costs at most about 55 Storefront lookups, each then shared by all users for 24 hours. A private or unavailable library removes the warnings but not the list.
-- **Wishlist** (`/wishlist`). Lists the user's tracked games with a discount status badge (on sale with percentage, full price, free, or price unavailable), discounted games first. Games are added by pasting a Steam store link or AppID. Each card loads its own price history when it scrolls into view and shows a single-series step-line chart (a price holds until it changes) with a crosshair readout on hover, touch, or arrow keys, a marked low point, and a table view of the same data. Above the chart a plain statement says whether the current price is the lowest SteamLite has recorded. That claim is made only with 7 or more recorded days; with less, any price is trivially the lowest and the UI says how many days remain instead.
-- **Price history is ours, and it starts when we start.** Steam publishes no historical prices. Every live price fetch through `getAppPrice` or `getAppDetails` is recorded in `price_history` (section 4.4). "Lowest recorded" therefore means lowest since SteamLite first saw the app, not lowest ever, and the wishlist page says so.
+- **Dashboard** (`/dashboard`). One library request drives the Library Health banner and the library list below it. The banner's three stat cards are toggle buttons (`aria-pressed`) that choose the list: **Games owned** lists every game A to Z, **Lifetime hours** lists every game by playtime (most first), and **Unplayed backlog** (the default) lists games with exactly 0 minutes played, A to Z. The list heading and count follow the selection and are announced politely to screen readers. Lists show 24 games at a time with a "Show more" button. In backlog mode the list is the Backlog Guardian deck of cards; each card looks up its store price only when it scrolls into view, so each 24-card page costs at most 24 Storefront lookups, each shared by all users for 24 hours. The card's value rating divides the current US store price by a game length that is **simulated** from the AppID and labelled as such in the UI; there is no real length data source yet. After a stale answer the client re-checks at most twice, 4 seconds apart, then stops.
+- **Deals** (`/deals`). A dense, SteamDB-style table. One request to `GET /api/deals` returns every discounted game among Steam's global top 1,000 sellers, and the browser filters, sorts and pages them with no further requests.
+  - **Expandable rows (v1.6, refined v1.7).** Clicking a row, or the game's title text (the title itself is the button, with `aria-expanded`; there is no arrow icon), opens a detail card directly under that row. The card starts with the game's header image. Its facts show Genres and at most 3 tags; the Features list is left out here. One card is open at a time; Escape or "Close" folds it. Nothing in the table navigates away: the card's "View on Steam" button opens the store page in a new tab. The card holds the full price history chart, a price breakdown (Steam all-time low, all-time / 1-year / 3-month low at any store, and the current price at every store ITAD tracks, cheapest first), and the game facts below. Its data loads only when opened and is cached. Inside the horizontally scrolling table the card is `position: sticky` and sized to the frame's visible width (measured with a ResizeObserver), so on phones it stays readable while the table scrolls.
+  - **Fit at desktop widths (v1.7).** Column widths are percentages of a fixed-layout table that never scrolls sideways from 1280px. Game names wrap to at most 3 lines (full name on hover) instead of being cut to one. Below 1440px (90rem) the filter sidebar is 14rem instead of 16rem, header labels are 11px with tighter spacing, and only the active column shows its sort arrow, so nothing in the header or cells overlaps. At 1440px and up the table looks as before, just wider.
+  - **Columns:** game (capsule image, name, DLC/Owned/Steam-wishlist chips), discount, price (regular price struck through), price status badges, Steam review rating (percent positive and review count), release date, sale end time (relative, exact time on hover), and a Watch button.
+  - **Sorting:** a "Sort by" menu (Top deals, biggest discount, most reviewed, best rated, price both ways, newest release, sale ending soonest, name both ways), and every column but badges and Watch also sorts from its header (`aria-sort` on the active one). Unknown values sort last in both directions.
+  - **Default order, "Top deals"** (v1.5, as specified): `score = log10(total Steam reviews) × discount%`. Games with fewer than 10 reviews (Steam's own threshold for showing a score) or unknown reviews get no score and sort last. Examples: 640,000 reviews at 75% off scores 436; 200,000 at 50% scores 265; 1,100 at 90% scores 274; 50 at 90% scores 153. Known trade-off: a small game at a very deep discount can outrank a major title at a moderate one (1,000 reviews at 90% = 270 beats 100,000 at 50% = 250). Restricting the pool to top sellers is what keeps the long tail out. Implemented as `dealScore` in `lib/deals-table.ts`.
+  - **Paging:** 25, 50 (default) or 100 rows per page. Any filter or sort change returns to page 1.
+  - **Filters** (sticky sidebar at 1024px and wider, a collapsible panel on phones): deal status (any discount, historical low, matching low, 1-year low); owned games (include, exclude, only owned); only my wishlist (Steam wishlist or SteamGauge watchlist); games only (hides DLC, on by default); hide games Steam hasn't rated (fewer than 10 reviews; on by default; unreleased games and rows whose reviews are still loading are kept); price range in dollars; minimum rating; minimum reviews; minimum discount.
+  - **Badges** (from IsThereAnyDeal, `lib/deals-table.ts`): *Historical low* when the price is below Steam's all-time low, or equals it and ITAD flags the deal as a new low. *Matching low* when it equals Steam's all-time low otherwise. *1-year low* when it is at or below the lowest price at any store in the past year.
+  - **Not built, by design:** a "2-year low" (ITAD exposes all-time, 1-year and 3-month lows only; the 1-year low stands in) and a "rare deal" badge (no data source).
+  - **Data sources (v1.5, Steam first):**
+    1. **Pool.** `IStoreQueryService/Query` with `released_only`, games and DLC, `price_filters.min_discount_percent = 1` and `global_top_n_sellers = 1000`, 200 apps per page, 5 cached pages. Each page includes Steam's name, art, release date, review totals, price, discount and sale end in the same response. If Steam sends only ids, `GetItems` fills in the store data. Undiscounted and free apps are dropped.
+    2. **Enrichment by Steam AppID (ITAD).** `lookup/id/shop/61` maps `app/{appid}` to ITAD ids, then `games/prices/v3` (no shop filter) gives the Steam all-time low and its deal flag, the 1-year low at any store, and every store's current price. The cheapest non-Steam price is kept only when it beats Steam's and shown as e.g. "$13.49 at GOG". This takes two ITAD calls per page.
+    3. **Reviews still missing** after step 1 are filled as in section 5.4. Rows still waiting are counted in `reviewsPending`, sorted last, and explained under the table with a "Load more ratings" button.
+  - **Not used: ITAD's deals list.** It drove the pool in v1.3–v1.4, which surfaced mostly obscure titles (the highest-reviewed game on page 1 had about 800 reviews) and missed major sale titles. ITAD is now only asked about apps by AppID.
+  - **Fallbacks.** Without `ITAD_API_KEY`: the same Steam pool, no badges, deal-status filter disabled. If Steam's query fails on every page: Steam's featured specials (`featuredcategories`, a few dozen games), enriched the same way, with a note under the table.
+  - Ownership comes from the cached owned-games list; a private library disables the owned filter rather than guessing. The cost-per-hour ranking and backlog-genre warnings of v1.2 were removed with the card grid.
+- **Wishlist** (`/wishlist`). Shows the user's real Steam wishlist merged with their SteamGauge watchlist.
+  - **Steam sync is read-only.** `GetWishlist` is called with the session's SteamID (cached 30 minutes). Steam wishlist entries show their Steam rank ("Steam wishlist #3"). SteamGauge never writes to Steam; watching, notes and removal change only `tracked_apps` in Supabase. The 50-game limit applies to the local watchlist only; Steam entries are capped at 500 for display.
+  - **Sorting:** a "Sort by" toolbar directly above the list: on sale first (default), Steam wishlist order, date added (newest or oldest), title A–Z or Z–A, price low–high or high–low, biggest discount, best rated. Sorting runs in the browser (`lib/wishlist-sort.ts`); the choice is remembered in that browser (localStorage, wrapped so blocked storage falls back to the default). Missing values sort last; ties keep Steam wishlist order. "Best rated" treats fewer than 10 reviews as unrated. Each item carries `listOrder` (Steam rank, then watch-only games newest first) so Steam order survives re-sorting. Review totals missing from `GetItems` are filled as on Deals, at most 20 new lookups per request.
+  - **Privacy:** an empty response is shown as "empty or private", with a link to Steam's privacy settings (Game details must be Public).
+  - **Lows line:** with ITAD configured, each card states Steam's all-time low and the 1-year low at any store.
+  - **Chart history** comes from ITAD (`GET /games/history/v2`, Steam shop only, lowest price per day), so a game shows years of history the first time it is opened. The request always sends `since=2003-01-01T00:00:00Z`: without `since`, ITAD returned only about the last three months (ITAD's docs state no default). The chart always shows 6M, 1Y, 2Y and All buttons with All selected; a range longer than the history is disabled, with the start date in its tooltip, and "Since {date}" is shown beside the buttons. Without ITAD, or if ITAD fails or has no record, the chart falls back to SteamGauge's own recorded history below.
+  - **Cards:** each has a discount status badge (on sale with percentage, full price, free, or price unavailable). Games are watched by pasting a Steam store link or AppID. Each card loads its price history when it scrolls into view and shows a single-series step-line chart (a price holds until it changes) with a crosshair readout on hover, touch, or arrow keys, a marked low point, and a table view of the same data. Above the chart a plain statement says whether the current price is the lowest on record. With the local record that claim needs 7 or more recorded days; with less, any price is trivially the lowest and the UI says how many days remain instead.
+- **Game facts (v1.6),** shown in expanded Deals rows and on every Wishlist card (`components/game-insights.tsx`, `GET /api/apps/[appid]/insights`):
+  - **Live players** from `ISteamUserStats/GetNumberOfCurrentPlayers`, with the age of the count.
+  - **Developer(s), publisher(s), franchise** and the most-voted **tags** from `GetItems` (`basic_info`, `include_tag_count = 12`); tag names from `IStoreService/GetTagList`.
+  - **Genres and descriptors** ("Single-player", "Steam Achievements") from Storefront `appdetails`, which also backs up developer and publisher.
+  - **Placement:** on a Wishlist card, "About this game" sits in the left column directly under the header image (on phones, under the image before the title); price history stays on the right.
+  - **Two modes protect the Storefront budget:**
+    - `mode=full` (an expanded Deals row: one user action) fetches `appdetails` if it is not cached, and adds ITAD's store prices.
+    - `mode=card` (Wishlist cards) skips store prices and loads when the card scrolls into view. Since v1.7.1 it also fetches `appdetails` when it is not cached, so cards show Genres (directly above Tags, the same chips as the Deals dropdown). Each game's `appdetails` is fetched at most once a day for all users, every call passes the Storefront quota gate, and when that budget is spent the card shows no genres and marks them `unavailable`.
+  - **Failure handling:** each source is independent; a failing one hides only its own section (`unavailable`).
+- **Recorded price history (fallback).** Steam publishes no historical prices. Every live price fetch through `getAppPrice` or `getAppDetails` is recorded in `price_history` (section 4.4). "Lowest recorded" therefore means lowest since SteamGauge first saw the app, not lowest ever, and the wishlist page says so.
 - **Degraded states are first-class UI.** Every data view handles: fresh, stale (shows "updated 3h ago"), private profile, and upstream unavailable.
 
 ### 4.2 API layer (BFF)
@@ -111,12 +154,13 @@ Route Handlers under `app/api/`. The proxy exposes **fixed, purpose-built endpoi
 | `GET /api/apps/[appid]/schema` | `ISteamUserStats/GetSchemaForGame` | No (CDN cacheable) |
 | `GET /api/apps/[appid]/news` | `ISteamNews/GetNewsForApp` | No (CDN cacheable) |
 | `GET /api/resolve/[vanity]` | `ISteamUser/ResolveVanityURL` | Yes |
-| `GET /api/deals` | Storefront `featuredcategories`, `GetOwnedGames`, `appdetails` per sale item and per sampled backlog game | Yes |
+| `GET /api/deals` | `IStoreQueryService/Query` (5 pages of 200, store data included), ITAD ID lookup + prices by AppID, `GetAppReviews` (at most 30 per request, only where reviews are missing), `GetOwnedGames`, `GetWishlist`; fallback: Storefront `featuredcategories` + `GetItems` + ITAD | Yes |
 | `GET /api/apps/search?q=` | none (reads `steam_apps`) | No |
-| `GET /api/wishlist` | Storefront `appdetails` (price only) per tracked app | Yes |
+| `GET /api/wishlist` | `IWishlistService/GetWishlist`, `GetItems` for the Steam wishlist plus the watchlist, `GetAppReviews` (at most 20 per request, only where needed), ITAD ID lookup + prices (lows) | Yes |
 | `POST /api/wishlist` | Storefront `appdetails`, only if the app is not cached | Yes |
 | `DELETE /api/wishlist/[appid]` | none | Yes |
-| `GET /api/wishlist/[appid]/history` | Storefront `appdetails` (price only), then reads `price_history` | Yes |
+| `GET /api/apps/[appid]/insights?mode=full\|card` | `GetNumberOfCurrentPlayers`, `GetItems` (one app), `GetTagList`, Storefront `appdetails` (full mode only), ITAD lookup + prices (full mode only); all cached | Yes |
+| `GET /api/wishlist/[appid]/history` | ITAD ID lookup + `games/history` (all years); fallback: Storefront `appdetails` (price only), then reads `price_history` | Yes |
 | `GET /api/cron/track-prices` | Storefront `appdetails` (price only) per tracked app, at most 100 per run | `CRON_SECRET` bearer token |
 
 The wishlist routes were first planned as `/api/apps/tracked`; they were built as `/api/wishlist` (2026-11-15) and that is the name of record.
@@ -126,11 +170,11 @@ Notes on the search and wishlist routes:
 - **Routing.** `search` is a static segment, which Next.js matches before the dynamic `/api/apps/[appid]`. It cannot collide with an AppID, since AppIDs are numeric.
 - **Search** runs `name ILIKE '%q%'` against `steam_apps`, served by the `steam_apps_name_trgm` index. `q` is trimmed, must be 3 to 64 characters, and has `%`, `_`, and `\` escaped before it is placed in the pattern. Results are capped at 20. It never calls Steam, so it costs no quota; the per-IP inbound limit (section 6.4) still applies. Response: `[{ appid, name, app_type, header_image }]`.
 - **Wishlist** routes are always scoped to the SteamID in the verified session. There is no SteamID in the URL or body, so one user cannot read or change another's list.
-  - `GET` returns the user's tracked apps (newest first, at most 50) with each one's current price through the 3-hour `appPrice` cache. A price that cannot be loaded marks only that item `unavailable`.
+  - `GET` returns the Steam wishlist merged with the watchlist (section 4.1), with `steamStatus` (`ok`, `empty_or_private`, `unavailable`) and `lowsAvailable`. If Steam cannot be reached the watchlist is still returned. A price that cannot be loaded marks only that item `unavailable`.
   - `POST` takes `{ appid, note? }`. It refuses a 51st app (409 `wishlist_full`), loads the app's details (404 `app_not_found` if Steam has no such app), ensures the `steam_apps` row, then upserts the `tracked_apps` row. Repeating the call is safe; the note changes only if one is sent.
   - `DELETE` removes one row and returns 204 whether or not the row existed.
   - `POST` and `DELETE` reject any request whose `Origin` header is not `APP_ORIGIN` (403 `bad_origin`), before looking at the session.
-  - `history` returns SteamLite's recorded daily prices for the app and a `lowStatus`. It is not personal data; any signed-in user may read it.
+  - `history` returns daily prices and a `lowStatus`, with `source: "itad" | "local"`. With ITAD the claim "lowest on record" needs only one point, because the record is ITAD's full history; with the local record it still needs 7 days. It is not personal data; any signed-in user may read it.
 - **Price tracking job.** `GET /api/cron/track-prices` refreshes the price of every tracked app once a day so history grows even when nobody opens the app. Schedule it in `vercel.json` (`{ "crons": [{ "path": "/api/cron/track-prices", "schedule": "17 9 * * *" }] }`). It answers 401 unless the request carries `Authorization: Bearer $CRON_SECRET`, and refuses to run at all if that secret is unset or shorter than 16 characters.
 
 Every handler runs the same pipeline, implemented once in `lib/steam/cached-fetch.ts`:
@@ -159,14 +203,16 @@ app/
   (app)/error.tsx           # dark error screen for anything a page throws (implemented)
   (app)/dashboard/page.tsx  # verifies the session, renders the dashboard (implemented)
   (app)/                    # still to write: profile, library, game detail, friends
-  (app)/deals/page.tsx      # verifies the session, renders the deals ranking (implemented)
+  (app)/deals/page.tsx      # verifies the session, renders the deals table (implemented)
   (app)/wishlist/page.tsx   # verifies the session, renders the wishlist (implemented)
 components/
   app-nav.tsx               # top bar + phone tab bar, active page, sign-out form (implemented)
-  dashboard-view.tsx        # client view: health banner, backlog deck, data age ticker (implemented)
-  deals-view.tsx            # client view: cost-per-hour ranking with backlog warnings (implemented)
-  wishlist-view.tsx         # client view: tracked games, discount status, add/remove (implemented)
-  price-history-chart.tsx   # single-series step-line price chart with readout and table view (implemented)
+  dashboard-view.tsx        # client view: stat-card filter (all/playtime/backlog), library list, data age ticker (implemented)
+  deals-view.tsx            # client view: filter sidebar, sortable paged deals table (implemented)
+  wishlist-view.tsx         # client view: Steam wishlist + watchlist, sync status, lows, watch/remove (implemented)
+  layout-width.ts           # one page width for all tabs and the nav, importable by Server Components (implemented)
+  game-insights.tsx         # shared: price history panel, game facts, store price list (implemented)
+  price-history-chart.tsx   # step-line price chart with 6M/1Y/2Y/All ranges, readout and table view (implemented)
   ui-kit.tsx                # shared: query provider, data age ticker, value meter, state panels, lazy-load hook (implemented)
   api/                      # route handlers listed above
   api/cron/                 # warm + purge jobs (protected by CRON_SECRET)
@@ -177,20 +223,30 @@ lib/
                             #   getAppDetails (implemented); other resources still to add
     cached-fetch.ts         # cache/lease/quota pipeline: cachedFetch() (implemented)
     ttl.ts                  # TTL policy table, cache keys (section 5.3) (implemented)
+    specials.ts             # parser for Storefront featuredcategories (implemented)
+    store-items.ts          # IStoreBrowseService/GetItems parser and batched fetch (implemented)
+    composites.ts           # multi-call refreshes: Steam sale pages + ITAD enrichment, wishlist view, ITAD history (implemented)
+    reviews.ts              # GetAppReviews summary parser (implemented)
+    insights.ts             # parsers: live players, GetItems metadata, tag list (implemented)
+    review-backfill.ts      # bounded fill-in of missing review totals: bulk cache read + capped lookups (implemented)
+  itad/client.ts            # the ONLY module that reads ITAD_API_KEY; allowlisted endpoints (implemented)
   supabase/server.ts        # server-only admin client (implemented)
   auth/shared.ts            # cookie names, origin, rate limit, safe logging (implemented)
   auth/session.ts           # cookie -> verified user, or null (implemented)
   api/respond.ts            # response envelope and error helpers for data routes (implemented)
   api/client.ts             # browser-side fetch for our API: envelope check, ApiError, retry rules (implemented)
-  deals.ts                  # deals ranking and backlog cross-reference, server only (implemented)
-  wishlist.ts               # list, add, remove tracked apps for the session user, server only (implemented)
+  deals.ts                  # assembles deal rows with owned/wished/watched flags and badges, server only (implemented)
+  deals-table.ts            # pure filter/sort/paginate/badge rules and the Top deals score, shared by server and browser (implemented)
+  game-insights.ts          # gathers one game's facts from cached sources, full/card modes, server only (implemented)
+  wishlist-sort.ts          # pure wishlist sort orders for the browser (implemented)
+  wishlist.ts               # Steam wishlist + watchlist merge, add, remove, server only (implemented)
   price-history.ts          # record and read our own daily price observations, server only (implemented)
   value.ts                  # cost-per-hour maths and the SIMULATED game length, shared by server and browser (implemented)
   validation.ts             # zod schemas: steamid, appid, vanity, search, country (implemented)
 supabase/migrations/        # SQL: steamlite_init.sql is migration 0001; 0002_price_history.sql
 ```
 
-`lib/steam/client.ts` and `lib/supabase/server.ts` start with `import "server-only"` so a build fails if either is ever imported into client code.
+`lib/steam/client.ts`, `lib/itad/client.ts` and `lib/supabase/server.ts` start with `import "server-only"` so a build fails if any of them is ever imported into client code.
 
 ### 4.4 Data model
 
@@ -360,6 +416,7 @@ Implementation details (`lib/steam/cached-fetch.ts`):
 - **Validation.** The caller supplies a `validate` function that returns the normalized data, or `private` / `not_found` for negative answers Steam reports inside an HTTP 200. What `validate` returns is what is stored in `payload`. If a deploy changes a payload's shape, its cache key must change too.
 - **Authorization.** Player-scoped resources are refused without a session before any database or Steam access.
 - **Endpoint wrappers** (`lib/steam/endpoints.ts`). Each wrapper supplies the `validate` function and maps Steam's fields to the shape the UI consumes (`PlayerSummary`, `OwnedGames`, `AppDetails`); that mapped shape is what is cached. Negative answers recognised inside HTTP 200: an empty `players` list is `not_found`, an empty `response` object from `GetOwnedGames` is `private`, and Storefront `success: false` is `not_found`. A private profile's summary is still `ok`, with `isPublic: false`. `getPlayerSummary` updates `users.persona_name`, `avatar_url`, and `profile_url` for SteamIDs that have signed in, and `getAppDetails` upserts `steam_apps` (section 4.4).
+- **Bulk cache-only read.** `peekCached(resource, argsList)` returns the servable cached entry (or null) for many keys of one **global** resource; player-scoped resources are refused because it has no session check. It is best effort: a database error makes every entry null.
 - **Not yet built:** batched `GetPlayerSummaries` for friends lists (section 5.4) and the user-forced refresh with its 2-minute cooldown (section 5.3).
 
 ### 5.3 TTL policy
@@ -377,6 +434,16 @@ Implementation details (`lib/steam/cached-fetch.ts`):
 | Game news | `app:{appid}:news` | 1 h | 7 d | Low frequency |
 | Vanity URL → SteamID | `vanity:{name}` | 30 d | 30 d | Effectively permanent |
 | Store specials (trending discounts) | `store:specials:{cc}` | 1 h | 24 h | One call serves every user; sales change slowly |
+| Steam sale page (200 discounted top sellers + store data + ITAD) | `deals:steam-sale:{cc}:{page}` | 1 h | 24 h | Global; one refresh serves every user. Replaced `deals:itad:*` in v1.5 |
+| Deals fallback (featured specials + store data + ITAD) | `deals:featured:v2:{cc}` | 1 h | 24 h | Used only if the sale query fails |
+| Steam wishlist IDs | `player:{steamid}:wishlist-ids` | 30 min | 24 h | Used by Deals for the Wished flag |
+| Wishlist view (Steam wishlist + watchlist + lows) | `player:{steamid}:wishlist:{fnv1a(watchlist appids)}` | 30 min | 24 h | Key changes when the watchlist changes, so a watched game appears at once |
+| ITAD price history (all years) | `app:{appid}:itad-history:full:{cc}` | 12 h | 7 d | Global; history only grows. The `full` segment was added in v1.4 so entries holding ITAD's 3-month default are never reused |
+| Steam review totals | `app:{appid}:reviews` | 3 d | 14 d | Global; review counts move slowly. Read in bulk by Deals and the Wishlist |
+| Live concurrent players | `app:{appid}:players` | 10 min | 2 h | Global; the only fast-moving game fact |
+| Developer, publisher, franchise, tag ids | `app:{appid}:store-meta:{cc}` | 24 h | 14 d | Global; GetItems for one app |
+| Steam tag names | `store:tags:english` | 7 d | 30 d | One entry for every user and game |
+| One game's prices at every store (ITAD) | `app:{appid}:itad-prices:{cc}` | 1 h | 24 h | Global; expanded Deals rows only |
 | Private profile / not found | same key, `status = 'private'` | 30 min | 30 min | Negative caching stops retry storms |
 
 TTLs live in one file (`lib/steam/ttl.ts`) so they can be tuned from observed usage. The signed-in user gets a manual "Refresh" button for their own profile, limited to one forced refresh per resource per 2 minutes.
@@ -389,6 +456,12 @@ TTLs live in one file (`lib/steam/ttl.ts`) so they can be tuned from observed us
 - **Lazy loading.** Achievements are fetched for a game only when the user opens that game, never for a whole library up front.
 - **No client polling.** No resource refetches on a timer in the browser.
 - **Cron warming, bounded.** A scheduled job refreshes only the most-viewed app keys, within a fixed share of the daily budget, during off-peak hours.
+- **Review fill-in, bounded** (`lib/steam/review-backfill.ts`). For list rows that `GetItems` left without review totals:
+  1. **Cache first, in bulk.** `peekCached` reads up to 100 `app:{appid}:reviews` entries per database query, with no Steam calls, no leases and no refreshes. Fresh and stale entries are both used.
+  2. **Then a few live lookups.** At most 30 per Deals request (20 per Wishlist request), at most 4 in flight, each through the normal quota gate and charged to `webapi`. Games come before DLC, then ITAD's own order.
+  3. **Bounded wait.** The response waits at most 2.5 s. Lookups still running continue through `after` (the route sets `maxDuration = 30`) and land in the cache for the next request.
+  4. **Stop on pushback.** The first quota or throttle failure stops the rest. Nothing here ever fails the request.
+  A cold table therefore fills in over a few loads; a warm one costs only database reads. Unreleased games are skipped.
 
 ### 5.5 Quota governor
 
@@ -401,6 +474,7 @@ Budgets (fixed windows):
 | `webapi` | 1 day (resets 00:00 Pacific, matching Valve's day) | 80,000 | Tiered by request priority, see below |
 | `webapi` | 1 minute | 120 | Smooths bursts |
 | `store` | 5 minutes | 150 | None |
+| `itad` | 5 minutes | 600 (interactive), 450 (background) | Composite refreshes are charged per ITAD call, before every attempt |
 
 Daily tiers. Each tier is the ceiling passed to `take_quota` for the same `webapi` day bucket, so lower-priority work is cut off first:
 
@@ -414,7 +488,9 @@ At 80,000 no Steam Web API calls are made and the app runs entirely from cache u
 
 **Enforcement in code.** `lib/steam/client.ts` will not open a connection until the caller's `acquire` callback returns true, and it calls `acquire` again before every retry. The cache pipeline implements `acquire` with `take_quota` plus the breaker check, so no code path reaches Steam without being charged.
 
-**Circuit breaker.** An HTTP 429 from either upstream, or a 403 from the Storefront, opens a breaker row in `rate_buckets` (`window_kind = 'breaker'`) for that upstream: 60 seconds on first trip, doubling up to 15 minutes. In a breaker row `window_start` is the time of the trip and `used` is its level (1 to 5); the breaker is open until `window_start + min(60 × 2^(level−1), 900)` seconds. A trip within 10 minutes of the previous one closing raises the level by one, otherwise it restarts at 1. While open, no calls are made and stale data is served. A 401/403 from the Web API does not open the breaker: with a JSON body it means the profile is not public (cached as `private`), and without one it means the API key was rejected (logged as a configuration fault). Retries for 5xx/timeouts are capped at 2, with exponential backoff and jitter, and each retry consumes quota.
+**Composite refreshes.** Deals pages, the wishlist view and ITAD history each need several upstream calls. They are one cache entry each, refreshed by one plan (`composite`) that receives an `UpstreamIO` with `webApi`, `store` and `itad` functions; every call inside is charged to its own bucket through the same `acquire`. A failed `GetItems` batch drops only those apps' store data (counted as `missingStoreData`); an ITAD failure drops only the lows, except quota and throttle errors, which abort the refresh so stale data is served.
+
+**Circuit breaker.** An HTTP 429 from any upstream, or a 403 from the Storefront, opens a breaker row in `rate_buckets` (`window_kind = 'breaker'`) for that upstream: 60 seconds on first trip, doubling up to 15 minutes. In a breaker row `window_start` is the time of the trip and `used` is its level (1 to 5); the breaker is open until `window_start + min(60 × 2^(level−1), 900)` seconds. A trip within 10 minutes of the previous one closing raises the level by one, otherwise it restarts at 1. While open, no calls are made and stale data is served. A 401/403 from the Web API does not open the breaker: with a JSON body it means the profile is not public (cached as `private`), and without one it means the API key was rejected (logged as a configuration fault). Retries for 5xx/timeouts are capped at 2, with exponential backoff and jitter, and each retry consumes quota.
 
 ### 5.6 Schema (cache and quota)
 
@@ -478,7 +554,7 @@ $$;
 
 Notes:
 
-- `api_cache.owner_steamid` is set for `player:*` keys so a user's cached data can be found and deleted. It is deliberately not a foreign key to `users`: most cached players (friends, looked-up profiles) are not SteamLite users.
+- `api_cache.owner_steamid` is set for `player:*` keys so a user's cached data can be found and deleted. It is deliberately not a foreign key to `users`: most cached players (friends, looked-up profiles) are not SteamGauge users.
 - `api_cache.status` is restricted to `ok`, `private`, or `not_found`. The last two are negative-cache entries (section 5.3).
 - `rate_buckets.bucket` holds three kinds of value: Steam upstreams (`webapi`, `store`), breaker rows for those upstreams, and inbound rate-limit subjects (`ip:<hash>`, `session:<id>`; section 6.4). All of them go through `take_quota`. Its first parameter keeps the name `p_upstream` and maps to the `bucket` column.
 - `take_quota` raises an exception for null arguments or a cost below 1, and returns `false` without changing anything when the budget is spent. Callers must treat an exception as "do not call Steam".
@@ -502,8 +578,9 @@ At the 80,000/day ceiling that supports roughly 6,000 fully cold sessions per da
 | `STEAM_API_KEY` | Server only | Read in exactly one module. Never prefixed `NEXT_PUBLIC_`. |
 | `SUPABASE_SECRET_KEY` (`sb_secret_...`) | Server only | Bypasses RLS. Never sent to the browser. |
 | `SESSION_SECRET` | Server only | 32+ random characters. HMAC key that turns a client IP into a rate-limit bucket name. Session tokens are random and opaque, so nothing is signed with it. |
-| `APP_ORIGIN` | Server only (not secret) | Public origin of the deployment, for example `https://steamlite.example.com`. Used for the OpenID `realm` and `return_to` and for all auth redirects, so a forged `Host` header cannot redirect a sign-in. |
+| `APP_ORIGIN` | Server only (not secret) | Public origin of the deployment, for example `https://steamgauge.example.com`. Used for the OpenID `realm` and `return_to` and for all auth redirects, so a forged `Host` header cannot redirect a sign-in. |
 | `CRON_SECRET` | Server only | Required as a bearer token on `/api/cron/*`. |
+| `ITAD_API_KEY` | Server only, optional | Read only in `lib/itad/client.ts`, sent only in the `ITAD-API-Key` header (never in a URL). Without it, deals use Steam Specials and charts use the local record. |
 | `NEXT_PUBLIC_SUPABASE_URL` | Public | Not a secret. |
 
 Rules:
@@ -581,7 +658,7 @@ Referrer-Policy: strict-origin-when-cross-origin
 Permissions-Policy: camera=(), microphone=(), geolocation=()
 ```
 
-Verify the exact Steam image hostnames against real responses during development and tighten `img-src` to match. Game descriptions and news from Steam contain HTML: render as plain text, or sanitize with an allowlist sanitizer (for example DOMPurify) before any use of `dangerouslySetInnerHTML`.
+`GetItems` image URLs are on `shared.akamai.steamstatic.com`, already covered by `*.steamstatic.com`. ITAD images are not used, and ITAD is called only from the server, so `connect-src` stays `'self'`. Verify the exact Steam image hostnames against real responses during development and tighten `img-src` to match. Game descriptions and news from Steam contain HTML: render as plain text, or sanitize with an allowlist sanitizer (for example DOMPurify) before any use of `dangerouslySetInnerHTML`.
 
 ### 6.6 Privacy and Steam terms compliance
 
@@ -590,7 +667,8 @@ Verify the exact Steam image hostnames against real responses during development
 - Deletion: a "Delete my data" action deletes the `users` row (which cascades to `sessions` and `tracked_apps`) and then deletes all `api_cache` rows where `owner_steamid` matches. The second step is explicit because `api_cache` has no foreign key to `users`.
 - Retention: cached player data expires at `stale_until` (maximum 7 days) and is purged by cron.
 - Steam Web API Terms: one key, stay under 100,000 calls/day, keep the key confidential, publish a privacy policy, and do not use Steam data for unsolicited marketing.
-- Branding: footer text stating SteamLite is not affiliated with Valve, with "Powered by Steam" attribution linking to `steampowered.com`.
+- IsThereAnyDeal: price lows and history shown in the app are attributed to IsThereAnyDeal with a link. Check their API terms before launch.
+- Branding: footer text stating SteamGauge is not affiliated with Valve, with "Powered by Steam" attribution linking to `steampowered.com`.
 - The Storefront API is undocumented and unsupported. Treat it as a dependency that can change or disappear, and keep store features isolated behind `lib/steam/endpoints.ts`.
 
 ---
@@ -621,6 +699,14 @@ Verify the exact Steam image hostnames against real responses during development
 | ADR-11 | Populate `steam_apps` lazily from `appdetails` responses | Scheduled full sync of Steam's app list | No extra Steam calls and no sync job to run; the catalog holds only apps our users care about. Trade-off: search covers only apps already seen |
 | ADR-12 | Wishlist at `/api/wishlist` (first planned as `/api/apps/tracked`), identified by session only | `/api/players/[steamid]/tracked` | No SteamID in the request means no way to address another user's list |
 | ADR-13 | Steam client requires a quota callback before every attempt | Client calls Steam freely, callers remember to check quota | Makes the governor impossible to skip, and charges retries automatically |
+| ADR-14 | IsThereAnyDeal for price lows and multi-year history, optional | Keep only our own recorded history; scrape SteamDB | ITAD has an official keyed API with years of Steam prices; SteamDB has no public API. Optional so the app still runs without a key |
+| ADR-15 | Deals filtered, sorted and paged in the browser over at most 1,000 rows | Server-side query per filter change | One cached payload serves every filter combination with zero extra upstream calls; 1,000 rows is small for a phone |
+| ADR-16 | Steam wishlist is read-only; watchlist stays in Supabase | Write watch actions back to the Steam wishlist | Steam offers no supported write API for third parties, and the user asked for no push-back |
+| ADR-17 | Badges use a 1-year low in place of the requested 2-year low; no "rare deal" badge | Compute a 2-year low from full history per row | That would cost one ITAD history call per deal (up to 1,000 per refresh); ITAD's deal list already carries all-time and 1-year lows |
+| ADR-18 | Review totals: batched `GetItems` first, then per-app `GetAppReviews` only for gaps, cached per app for all users and capped per request | Call the store `appreviews` URL for every row | That URL was retired on 2026-10-22. One call per row would be up to 1,000 calls per refresh; the per-app cache plus caps keeps a warm table at zero calls |
+| ADR-19 | Default deals order is a "Top deals" score: log10(reviews) × discount% (v1.5), with sub-10-review titles hidden by default | Sort by rating, or by discount alone; log10(reviews)² × discount% | Rating alone surfaces tiny games with a handful of perfect reviews; discount alone surfaces shovelware. The squared variant favours major titles more strongly and remains a one-line change |
+| ADR-21 | Wishlist cards fetch Storefront `appdetails` (for genres) lazily, per card in view, cached 24 h for everyone (revised v1.7.1) | Cache-only reads (v1.6), which left Genres empty on most cards | `appdetails` is Steam's only source of genre names. The 24-hour shared cache, lazy loading and the Storefront quota gate bound the cost; developer, publisher and tags still come from the Web API |
+| ADR-20 | The deals pool comes from Steam (discounted apps among the global top 1,000 sellers); ITAD only enriches by Steam AppID | ITAD's deals list as the pool, with a reverse lookup to AppIDs | The ITAD-driven pool was dominated by obscure titles and missed major sales. Steam's own query defines "on sale" exactly as the store does |
 
 ---
 
@@ -636,6 +722,14 @@ Verify the exact Steam image hostnames against real responses during development
 | Search returns few or no results because the catalog is lazily populated | Search feels broken on a new deployment | Seed from owned-games responses (open question 3); show "no matches yet" with a link to open a game by Steam URL or AppID |
 | Storefront `featuredcategories` response differs from what the parser expects (written without access to a live response) | Deals page shows an error or an empty list | Verify against a real response before launch; the parser skips items it cannot read rather than failing |
 | Price history is thin for weeks after launch, and has gaps if the daily job does not run | "Lowest recorded" is rarely claimable at first | Schedule the daily job; the UI states days recorded and withholds the claim under 7 days |
+| `IStoreQueryService/Query` is undocumented by Valve. The filter names (`price_filters.min_discount_percent`, `global_top_n_sellers`) and the store `type` values (0 game, 4 DLC) come from community documentation | If a filter is ignored, the pool is wider or unranked; if the method fails, Deals falls back to featured specials | Undiscounted rows are dropped regardless; verify one live response before launch and check the pool contains known sale titles |
+| ITAD endpoint paths (`/lookup/id/shop/61/v1`, `/games/prices/v3`, `/games/history/v2`) and the deal `flag` value `"N"` (new historical low) were written from the docs without a live call | Deals fall back to Steam Specials; badges may mark too few historical lows | Make one call to each with a real key before launch and adjust `ENDPOINTS` in `lib/itad/client.ts` |
+| `GetItems` field names (`best_purchase_option.active_discounts[].discount_end_date`, `reviews.summary_filtered`, `assets.asset_url_format`) written without a live response | Missing sale end, rating, or images | Parser skips what it cannot read and falls back to Steam's standard image paths; verify before launch |
+| `GetAppReviews` called anonymously shares Steam's lower keyless rate limit, which other traffic from the same serverless IPs also uses | Some ratings stay "loading" longer | Per-app cache (3 days fresh, 14 usable), 30 lookups per request, 4 in flight, stop at the first 429; the circuit breaker applies |
+| `GetAppReviews` with `purchase_type` 0 (Steam purchases) is assumed to match the store page's score; the docs and community examples disagree on which value most tools use | Review counts may be lower than another site shows | Chosen to match the store page; change `purchase_type` in `cached-fetch.ts` (and bump the cache key) if needed |
+| ITAD's documentation states no default for `since` on the history log; the 3-month window was observed, not documented | If ITAD changes the parameter, charts could shorten again | `since` is always sent explicitly; a test asserts it |
+| `GetItems` `basic_info.developers / publishers / franchises` and `tags` field names, and `GetTagList`, written without a live response | A missing section on the facts panel | Each is optional; developer and publisher fall back to `appdetails`; verify before launch |
+| A private Steam wishlist looks the same as an empty one | User sees "empty or private" when theirs is just private | UI explains the Game details privacy setting and links to it |
 | Quota bug (for example a refresh loop) | Budget burned | Governor is enforced in the database, not in app code; per-minute ceiling limits damage |
 
 Open questions for the team:
@@ -654,3 +748,9 @@ Open questions for the team:
 - Supabase API keys: https://supabase.com/docs/guides/api/api-keys
 - Supabase migration to publishable/secret keys: https://supabase.com/docs/guides/getting-started/migrating-to-new-api-keys
 - Storefront rate limit (community-observed): https://steamdb.info/blog/5
+- IsThereAnyDeal API documentation: https://docs.isthereanydeal.com/
+- IWishlistService/GetWishlist (community documentation): https://steamapi.xpaw.me/#IWishlistService/GetWishlist
+- IStoreBrowseService/GetItems (community documentation): https://steamapi.xpaw.me/#IStoreBrowseService/GetItems
+- ISteamUserStats/GetNumberOfCurrentPlayers (Steamworks documentation): https://partner.steamgames.com/doc/webapi/ISteamUserStats
+- IUserReviewsService/GetAppReviews (Steamworks documentation): https://partner.steamgames.com/doc/webapi/IUserReviewsService
+- IStoreQueryService/Query (community documentation): https://steamapi.xpaw.me/IStoreQueryService and https://github.com/benhurk/IStoreQueryService-Query-v1-Documentation

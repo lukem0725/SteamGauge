@@ -16,6 +16,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { PAGE_WIDTH } from "@/components/layout-width";
+
 interface NavItem {
   readonly href: string;
   readonly label: string;
@@ -81,12 +83,12 @@ export function AppNav() {
     <>
       {/* Top bar */}
       <header className="sticky top-0 z-30 border-b border-zinc-800 bg-zinc-950/90 backdrop-blur">
-        <div className="mx-auto flex h-14 w-full max-w-5xl items-center gap-4 px-4 sm:px-6 lg:px-8">
+        <div className={`${PAGE_WIDTH} flex h-14 items-center gap-4`}>
           <Link
             href="/dashboard"
             className="rounded-md text-base font-semibold tracking-tight text-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
           >
-            Steam<span className="text-emerald-400">Lite</span>
+            Steam<span className="text-emerald-400">Gauge</span>
           </Link>
 
           <nav aria-label="Main" className="hidden flex-1 sm:block">

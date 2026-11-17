@@ -1,7 +1,7 @@
 /**
  * lib/steam/cached-fetch.ts
  *
- * The data engine. Every read of Steam data in SteamLite goes through
+ * The data engine. Every read of Steam data in SteamGauge goes through
  * `cachedFetch`, which implements the cache-first read path of architecture
  * doc 5.2 on top of the quota governor of 5.5 and the tables of 5.6.
  *
@@ -21,6 +21,7 @@
  */
 import "server-only";
 
+import { itadRequest, type ItadEndpoint, type ItadRequest } from "@/lib/itad/client";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 
 import {
@@ -32,6 +33,15 @@ import {
   type SteamStoreMethod,
   type SteamWebApiMethod,
 } from "./client";
+import {
+  fetchDealsFallback,
+  fetchSalePage,
+  fetchItadAppPrices,
+  fetchItadHistory,
+  fetchSteamWishlistIds,
+  fetchWishlistView,
+} from "./composites";
+import { storeMetaInput } from "./insights";
 import {
   REFRESH_LEASE_SECONDS,
   TTL,
@@ -169,6 +179,11 @@ const WEBAPI_DAY_CEILING = {
 } as const;
 const WEBAPI_MINUTE_CEILING = 120;
 const STORE_FIVE_MINUTE_CEILING = 150;
+/**
+ * IsThereAnyDeal allows 1,000 requests per 5 minutes per key. Background
+ * refreshes stop at 450 so people using the app always have room.
+ */
+const ITAD_FIVE_MINUTE_CEILING = { background: 450, interactive: 600 } as const;
 
 type QuotaTier = keyof typeof WEBAPI_DAY_CEILING;
 
@@ -206,16 +221,33 @@ const PG_UNIQUE_VIOLATION = "23505";
 // Resource -> Steam request
 // =============================================================================
 
+/**
+ * Upstream calls available to a composite refresh. Each one goes through the
+ * same quota gate, breaker and timeout as a single-call refresh.
+ */
+export interface UpstreamIO {
+  webApi(method: SteamWebApiMethod, params: SteamParams): Promise<unknown>;
+  store(method: SteamStoreMethod, params: SteamParams): Promise<unknown>;
+  itad(endpoint: ItadEndpoint, request: ItadRequest): Promise<unknown>;
+}
+
 type RequestPlan =
   | { readonly upstream: "webapi"; readonly method: SteamWebApiMethod; readonly params: SteamParams }
-  | { readonly upstream: "store"; readonly method: SteamStoreMethod; readonly params: SteamParams };
+  | { readonly upstream: "store"; readonly method: SteamStoreMethod; readonly params: SteamParams }
+  /**
+   * Several calls, possibly to several upstreams (lib/steam/composites.ts).
+   * `run` returns an already validated result.
+   */
+  | { readonly upstream: "composite"; readonly run: (io: UpstreamIO) => Promise<unknown> };
 
 const web = (method: SteamWebApiMethod, params: SteamParams): RequestPlan =>
   ({ upstream: "webapi", method, params });
 const store = (method: SteamStoreMethod, params: SteamParams): RequestPlan =>
   ({ upstream: "store", method, params });
+const composite = (run: (io: UpstreamIO) => Promise<unknown>): RequestPlan =>
+  ({ upstream: "composite", run });
 
-/** The one Steam call that refreshes each resource. Argument order matches `cacheKey`. */
+/** How each resource is refreshed. Argument order matches `cacheKey`. */
 const REQUESTS: { readonly [R in SteamResource]: (...args: KeyArgs<R>) => RequestPlan } = {
   playerSummary: (steamid) => web("GetPlayerSummaries", { steamids: steamid }),
   ownedGames: (steamid) =>
@@ -229,7 +261,90 @@ const REQUESTS: { readonly [R in SteamResource]: (...args: KeyArgs<R>) => Reques
   appNews: (appid) => web("GetNewsForApp", { appid, count: 10, maxlength: 500 }),
   vanityUrl: (name) => web("ResolveVanityURL", { vanityurl: name }),
   storeSpecials: (cc) => store("featuredcategories", { cc, l: "english" }),
+  salePage: (cc, page) => composite((io) => fetchSalePage(io, cc, page)),
+  dealsFallback: (cc) => composite((io) => fetchDealsFallback(io, cc)),
+  steamWishlistIds: (steamid) => composite((io) => fetchSteamWishlistIds(io, steamid)),
+  wishlistView: (steamid, localAppids) =>
+    composite((io) => fetchWishlistView(io, steamid, localAppids, "us")),
+  itadHistory: (appid, cc) => composite((io) => fetchItadHistory(io, appid, cc)),
+  // Summary only: one review on the first page carries query_summary.
+  // filter 1 = Recent (day_range does not apply), review_type 0 = all,
+  // purchase_type 0 = Steam purchases (what the store page's score counts).
+  currentPlayers: (appid) => web("GetNumberOfCurrentPlayers", { appid }),
+  appStoreMeta: (appid, cc) => web("GetItems", { input_json: storeMetaInput(appid, cc) }),
+  steamTags: (language) => web("GetTagList", { language }),
+  itadAppPrices: (appid, cc) => composite((io) => fetchItadAppPrices(io, appid, cc)),
+  appReviews: (appid) =>
+    web("GetAppReviews", {
+      input_json: JSON.stringify({
+        appid,
+        filter: 1,
+        languages: ["all"],
+        review_type: 0,
+        purchase_type: 0,
+        num_per_page: 1,
+      }),
+    }),
 };
+
+// =============================================================================
+// peekCached: bulk, cache-only read
+// =============================================================================
+
+/** Keys per IN (...) query, so the request URL stays short. */
+const PEEK_CHUNK = 100;
+
+/**
+ * Reads many cached entries of one GLOBAL resource in a few queries. Never
+ * calls Steam, never refreshes, never takes a lease: an entry that is
+ * missing, expired or only a lease placeholder comes back as null, and the
+ * caller decides whether to fetch it with cachedFetch.
+ *
+ * Fresh and stale entries are both returned (`meta.stale` tells them apart).
+ * Player-scoped resources are refused: this has no session check.
+ *
+ * Best effort: if the database cannot be read, every entry is null.
+ *
+ * @returns one result per input, in the same order.
+ */
+export async function peekCached<R extends SteamResource>(
+  resource: R,
+  argsList: readonly KeyArgs<R>[],
+): Promise<(CachedResult<unknown> | null)[]> {
+  if (TTL[resource].scope !== "global") {
+    throw new CachedFetchError("auth_required", resource);
+  }
+  const keyOf = cacheKey[resource] as (...a: readonly unknown[]) => string;
+  const keys = argsList.map((args) => keyOf(...(args as readonly unknown[])));
+  const found = new Map<string, CacheRow>();
+
+  try {
+    const unique = [...new Set(keys)];
+    for (let i = 0; i < unique.length; i += PEEK_CHUNK) {
+      const result = await getSupabaseAdmin()
+        .from("api_cache")
+        .select("key,payload,status,fetched_at,fresh_until,stale_until")
+        .in("key", unique.slice(i, i + PEEK_CHUNK));
+      if (result.error) {
+        logCache(resource, "cache_peek_failed", dbLabel(result.error));
+        return keys.map(() => null);
+      }
+      for (const row of Array.isArray(result.data) ? (result.data as unknown[]) : []) {
+        const key = (row as { key?: unknown } | null)?.key;
+        if (typeof key === "string" && isCacheRow(row)) found.set(key, row);
+      }
+    }
+  } catch (err) {
+    logCache(resource, "cache_peek_failed", failureLabel(err));
+    return keys.map(() => null);
+  }
+
+  return keys.map((key) => {
+    const row = found.get(key);
+    if (!row || !isServable(row)) return null;
+    return fromRow<unknown>(row, classifyFreshness(row) !== "fresh");
+  });
+}
 
 // =============================================================================
 // cachedFetch
@@ -427,12 +542,21 @@ async function refreshFromSteam<T>(ctx: ReadContext<T>, tier: QuotaTier): Promis
     signal: AbortSignal.timeout(REFRESH_DEADLINE_MS),
   };
 
+  const io: UpstreamIO = {
+    webApi: (method, params) => steamWebApi(method, params, requestOptions),
+    store: (method, params) => steamStore(method, params, requestOptions),
+    itad: (endpoint, request) => itadRequest(endpoint, request, requestOptions),
+  };
+
   let raw: unknown;
   try {
+    const plan = ctx.plan;
     raw =
-      ctx.plan.upstream === "webapi"
-        ? await steamWebApi(ctx.plan.method, ctx.plan.params, requestOptions)
-        : await steamStore(ctx.plan.method, ctx.plan.params, requestOptions);
+      plan.upstream === "composite"
+        ? await plan.run(io)
+        : plan.upstream === "webapi"
+          ? await io.webApi(plan.method, plan.params)
+          : await io.store(plan.method, plan.params);
   } catch (err) {
     if (err instanceof SteamError) {
       if (err.shouldOpenBreaker) await tripBreaker(err.upstream, ctx.resource);
@@ -633,6 +757,12 @@ function makeAcquire(tier: QuotaTier): (attempt: AttemptContext) => Promise<bool
     if (await isBreakerOpen(upstream)) return false;
 
     const now = Date.now();
+    if (upstream === "itad") {
+      const window = new Date(Math.floor(now / 300_000) * 300_000);
+      const ceiling =
+        tier === "background" ? ITAD_FIVE_MINUTE_CEILING.background : ITAD_FIVE_MINUTE_CEILING.interactive;
+      return takeQuota("itad", "5min", window, ceiling);
+    }
     if (upstream === "store") {
       const window = new Date(Math.floor(now / 300_000) * 300_000);
       return takeQuota("store", "5min", window, STORE_FIVE_MINUTE_CEILING);

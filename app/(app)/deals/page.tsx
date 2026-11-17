@@ -16,7 +16,7 @@ import { DealsView } from "@/components/deals-view";
 import { getSessionUser } from "@/lib/auth/session";
 import { SESSION_COOKIE, SIGNED_OUT_PATH } from "@/lib/auth/shared";
 
-export const metadata: Metadata = { title: "Deals · SteamLite" };
+export const metadata: Metadata = { title: "Deals · SteamGauge" };
 
 // Depends on a cookie: never prerender or cache this page.
 export const dynamic = "force-dynamic";

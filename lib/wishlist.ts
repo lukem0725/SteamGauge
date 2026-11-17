@@ -1,26 +1,35 @@
 /**
  * lib/wishlist.ts
  *
- * The personal watchlist: which apps a user tracks (`tracked_apps`) and what
- * they cost right now.
+ * The wishlist page's data: the user's live Steam wishlist merged with their
+ * SteamGauge watchlist (`tracked_apps`).
+ *
+ *   Steam wishlist   Read from Steam (IWishlistService/GetWishlist) on every
+ *                    refresh, about every 30 minutes. Read-only: SteamGauge
+ *                    never writes to Steam.
+ *   Watchlist        SteamGauge's own list in Supabase, with notes. Adding or
+ *                    removing here changes only this list.
  *
  * Security: every function takes the SteamID from the verified session and
  * every query filters by it. There is no parameter through which one user
  * could read or change another user's list. Row Level Security does not help
  * here (the admin client bypasses it), so this filter is the access control.
  *
- * Data flow: catalog data and prices are read through the cached-fetch
- * pipeline (getAppDetails, getAppPrice). Only the list itself is ours.
+ * Data flow: Steam and IsThereAnyDeal are read through the cached-fetch
+ * pipeline (getWishlistView, getAppDetails). Only the watchlist is ours.
  */
 import "server-only";
 
-import type { CacheMeta, CachedResult } from "@/lib/steam/cached-fetch";
+import { recordPriceObservation } from "@/lib/price-history";
+import { CachedFetchError, type CachedResult } from "@/lib/steam/cached-fetch";
+import { backfillReviews } from "@/lib/steam/review-backfill";
 import {
   getAppDetails,
-  getAppPrice,
+  getWishlistView,
   upsertCatalogEntry,
   type AppPrice,
   type EndpointContext,
+  type WishlistLows,
 } from "@/lib/steam/endpoints";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { DEFAULT_COUNTRY_CODE, type AddToWishlistInput } from "@/lib/validation";
@@ -33,21 +42,51 @@ export interface WishlistItem {
   readonly appid: number;
   readonly name: string;
   readonly headerImage: string | null;
+  /** On the user's Steam wishlist. */
+  readonly onSteamWishlist: boolean;
+  /** Steam's ranking, 1 = top. Null when unranked or not on the Steam wishlist. */
+  readonly steamPriority: number | null;
+  /** On the SteamGauge watchlist (removable here, can carry a note). */
+  readonly watched: boolean;
   readonly note: string | null;
-  readonly addedAt: string;
+  /** When it was added: to the Steam wishlist if there, otherwise to the watchlist. */
+  readonly addedAt: string | null;
+  /**
+   * 0-based position in "Steam wishlist order": Steam entries by their Steam
+   * rank, then watch-only games, most recently watched first.
+   */
+  readonly listOrder: number;
   /**
    * "priced"       `price` is set. Check `price.discountPercent` for a sale.
    * "free"         The game is free; there is no price to track.
-   * "unavailable"  The price could not be loaded right now.
+   * "unavailable"  No price right now (not released, or not sold in the US).
    */
   readonly priceStatus: "priced" | "free" | "unavailable";
   readonly price: AppPrice | null;
+  readonly saleEndsAt: string | null;
+  readonly comingSoon: boolean;
+  readonly releaseDate: string | null;
+  readonly reviewPercent: number | null;
+  readonly reviewCount: number | null;
+  /** Historical lows from IsThereAnyDeal. Null when unknown. */
+  readonly lows: WishlistLows | null;
 }
 
 export interface WishlistPayload {
   readonly items: readonly WishlistItem[];
-  /** The most a user may track. */
+  /** The most games the SteamGauge watchlist may hold. */
   readonly limit: number;
+  /** How many items are on the SteamGauge watchlist. */
+  readonly watchedCount: number;
+  /**
+   * "ok"                 Steam wishlist read.
+   * "empty_or_private"   Steam returned nothing. It cannot say which.
+   * "unavailable"        Steam could not be asked right now.
+   */
+  readonly steamStatus: "ok" | "empty_or_private" | "unavailable";
+  /** Items whose Steam review totals are still being looked up. */
+  readonly reviewsPending: number;
+  readonly lowsAvailable: boolean;
 }
 
 export type AddResult =
@@ -59,13 +98,11 @@ export type AddResult =
 // Tunables
 // =============================================================================
 
-/**
- * Each tracked app costs a Storefront price lookup when its 3-hour cache
- * entry expires. The cap keeps one user's list from dominating that budget.
- */
+/** The most games the SteamGauge watchlist may hold. */
 export const WISHLIST_LIMIT = 50;
 
-const PRICE_CONCURRENCY = 4;
+/** New per-app review lookups per wishlist request (the rest come from cache). */
+const WISHLIST_REVIEW_LOOKUPS = 20;
 
 type Session = { readonly steamid: string };
 
@@ -74,13 +111,20 @@ type Session = { readonly steamid: string };
 // =============================================================================
 
 /**
- * The user's tracked apps, newest first, each with its current price.
+ * The Steam wishlist and the SteamGauge watchlist, merged, with current prices
+ * and historical lows.
  *
- * `meta` summarises price freshness across the list: `fetchedAt` is the
- * oldest price shown, `stale` is true if any price is being refreshed.
+ * Order: games on sale first (deepest discount on top), then Steam wishlist
+ * order, then watchlist-only games, newest first. The page can re-sort
+ * (lib/wishlist-sort.ts); `listOrder` keeps the Steam order available.
  *
- * @throws if the database cannot be read. A price that cannot be loaded only
- *         marks that one item "unavailable".
+ * Review totals missing from Steam's store data are filled in the same way
+ * as on Deals (lib/steam/review-backfill.ts), with at most
+ * WISHLIST_REVIEW_LOOKUPS new lookups per request.
+ *
+ * @throws if the watchlist cannot be read from the database. If only Steam is
+ *         unavailable, the watchlist is still returned with
+ *         steamStatus "unavailable".
  */
 export async function listWishlist(
   session: Session,
@@ -96,71 +140,138 @@ export async function listWishlist(
     .order("created_at", { ascending: false })
     .limit(WISHLIST_LIMIT);
   if (tracked.error) throw new Error("wishlist read failed");
+  const local = asArray(tracked.data).filter(isTrackedRow);
+  const localByAppid = new Map(local.map((row) => [row.appid, row]));
 
-  const rows = asArray(tracked.data).filter(isTrackedRow);
-  if (rows.length === 0) {
-    return {
-      status: "ok",
-      data: { items: [], limit: WISHLIST_LIMIT },
-      meta: { source: "cache", fetchedAt: new Date().toISOString(), stale: false },
-    };
-  }
-
-  const catalog = await db
-    .from("steam_apps")
-    .select("appid,name,header_image,is_free")
-    .in(
-      "appid",
-      rows.map((row) => row.appid),
+  let view: Awaited<ReturnType<typeof getWishlistView>> | null = null;
+  try {
+    const watchedAppids = new Set(local.map((row) => row.appid));
+    view = await getWishlistView(session.steamid, [...watchedAppids], ctx, (fresh) =>
+      recordWishlistRefresh(fresh.apps, watchedAppids),
     );
-  if (catalog.error) throw new Error("catalog read failed");
-  const apps = new Map<number, CatalogRow>();
-  for (const app of asArray(catalog.data).filter(isCatalogRow)) {
-    apps.set(app.appid, app);
+  } catch (err) {
+    // Steam or the cache is unavailable. The watchlist alone still renders.
+    if (!(err instanceof CachedFetchError)) throw err;
+  }
+  const data = view?.status === "ok" ? view.data : null;
+
+  // Names for watchlist games Steam did not describe, from our catalog.
+  const known = new Map((data?.apps ?? []).map((app) => [app.appid, app]));
+  const missing = local.map((row) => row.appid).filter((appid) => !known.get(appid)?.name);
+  const catalog = new Map<number, CatalogRow>();
+  if (missing.length > 0) {
+    const rows = await db.from("steam_apps").select("appid,name,header_image,is_free").in("appid", missing);
+    if (!rows.error) for (const row of asArray(rows.data).filter(isCatalogRow)) catalog.set(row.appid, row);
   }
 
-  const prices = new Map<number, { price: AppPrice | null; meta: CacheMeta }>();
-  await mapWithConcurrency(rows, PRICE_CONCURRENCY, async (row) => {
-    try {
-      const result = await getAppPrice(row.appid, DEFAULT_COUNTRY_CODE, ctx);
-      if (result.status === "ok") prices.set(row.appid, { price: result.data.price, meta: result.meta });
-    } catch {
-      // Left out of the map: shown as "unavailable".
-    }
-  });
+  const steamEntries = data?.steam.items ?? [];
+  const steamByAppid = new Map(steamEntries.map((entry) => [entry.appid, entry]));
+  const order = [
+    ...steamEntries.map((entry) => entry.appid),
+    ...local.map((row) => row.appid).filter((appid) => !steamByAppid.has(appid)),
+  ];
 
-  const items: WishlistItem[] = rows.map((row) => {
-    const app = apps.get(row.appid);
-    const priced = prices.get(row.appid);
-    const price = priced?.price ?? null;
+  const drafts: WishlistItem[] = order.map((appid, listOrder) => {
+    const steam = steamByAppid.get(appid);
+    const watched = localByAppid.get(appid);
+    const app = known.get(appid);
+    const fallback = catalog.get(appid);
+    const priced = app?.priceFinal != null && !app.isFree;
     return {
-      appid: row.appid,
-      name: app?.name ?? `App ${row.appid}`,
-      headerImage: app?.header_image ?? null,
-      note: row.note,
-      addedAt: row.created_at,
-      // A successful lookup with no price means the game is free here.
-      priceStatus: price ? "priced" : priced ? "free" : "unavailable",
-      price,
+      appid,
+      name: app?.name ?? fallback?.name ?? `App ${appid}`,
+      headerImage: app?.headerImage ?? fallback?.header_image ?? null,
+      onSteamWishlist: steam !== undefined,
+      steamPriority: steam && steam.priority > 0 ? steam.priority : null,
+      watched: watched !== undefined,
+      note: watched?.note ?? null,
+      addedAt: steam?.addedAt ?? watched?.created_at ?? null,
+      listOrder,
+      priceStatus: priced ? "priced" : app?.isFree || fallback?.is_free ? "free" : "unavailable",
+      price:
+        priced && app.priceFinal !== null
+          ? {
+              currency: "USD",
+              initial: app.priceInitial ?? app.priceFinal,
+              final: app.priceFinal,
+              discountPercent: app.discountPercent,
+              finalFormatted: null,
+            }
+          : null,
+      saleEndsAt: app?.saleEndsAt ?? null,
+      comingSoon: app?.comingSoon ?? false,
+      releaseDate: app?.releaseDate ?? null,
+      reviewPercent: app?.reviewPercent ?? null,
+      reviewCount: app?.reviewCount ?? null,
+      lows: data?.lows[String(appid)] ?? null,
     };
   });
 
-  return { status: "ok", data: { items, limit: WISHLIST_LIMIT }, meta: summarizeMeta(prices) };
+  const reviews = await backfillReviews(drafts, ctx, { liveLookups: WISHLIST_REVIEW_LOOKUPS });
+  const items: WishlistItem[] = drafts.map((item) => {
+    const summary = reviews.summaries.get(item.appid);
+    return summary ? { ...item, reviewCount: summary.count, reviewPercent: summary.percent } : item;
+  });
+
+  const discount = (item: WishlistItem) => item.price?.discountPercent ?? 0;
+  const position = new Map(order.map((appid, index) => [appid, index]));
+  items.sort(
+    (a, b) =>
+      Number(discount(b) > 0) - Number(discount(a) > 0) ||
+      discount(b) - discount(a) ||
+      (position.get(a.appid) ?? 0) - (position.get(b.appid) ?? 0),
+  );
+
+  return {
+    status: "ok",
+    data: {
+      items,
+      limit: WISHLIST_LIMIT,
+      watchedCount: local.length,
+      steamStatus: data ? data.steam.status : "unavailable",
+      lowsAvailable: data?.lowsAvailable ?? false,
+      reviewsPending: reviews.pending,
+    },
+    meta: view?.meta ?? { source: "cache", fetchedAt: new Date().toISOString(), stale: false },
+  };
 }
 
-function summarizeMeta(
-  prices: ReadonlyMap<number, { price: AppPrice | null; meta: CacheMeta }>,
-): CacheMeta {
-  const metas = [...prices.values()].map((entry) => entry.meta);
-  if (metas.length === 0) {
-    return { source: "cache", fetchedAt: new Date().toISOString(), stale: false };
+/**
+ * After the wishlist view is refreshed from Steam: add every named app to the
+ * catalog (so it is searchable and can be watched), and record today's price
+ * of watched games in our own price history.
+ */
+export async function recordWishlistRefresh(
+  apps: readonly { appid: number; name: string | null; headerImage: string; isFree: boolean;
+    priceFinal: number | null; priceInitial: number | null; discountPercent: number }[],
+  watchedAppids: ReadonlySet<number>,
+): Promise<void> {
+  const named = apps.filter((app) => app.name);
+  if (named.length > 0) {
+    const { error } = await getSupabaseAdmin()
+      .from("steam_apps")
+      .upsert(
+        named.map((app) => ({
+          appid: app.appid,
+          name: app.name,
+          header_image: app.headerImage,
+          is_free: app.isFree,
+          updated_at: new Date().toISOString(),
+        })),
+        { onConflict: "appid" },
+      );
+    if (error) throw new Error("catalog upsert failed");
   }
-  const oldest = metas.reduce((a, b) => (Date.parse(a.fetchedAt) <= Date.parse(b.fetchedAt) ? a : b));
-  return {
-    source: metas.every((meta) => meta.source === "steam") ? "steam" : "cache",
-    fetchedAt: oldest.fetchedAt,
-    stale: metas.some((meta) => meta.stale),
-  };
+  for (const app of apps) {
+    if (!watchedAppids.has(app.appid) || app.priceFinal === null || app.isFree) continue;
+    await recordPriceObservation(app.appid, DEFAULT_COUNTRY_CODE, {
+      currency: "USD",
+      initial: app.priceInitial ?? app.priceFinal,
+      final: app.priceFinal,
+      discountPercent: app.discountPercent,
+      finalFormatted: null,
+    });
+  }
 }
 
 // =============================================================================
@@ -258,19 +369,4 @@ function isCatalogRow(value: unknown): value is CatalogRow {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
   return Number.isInteger(v.appid) && typeof v.name === "string";
-}
-
-async function mapWithConcurrency<T>(
-  items: readonly T[],
-  limit: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  let next = 0;
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const item = items[next++] as T;
-      await worker(item);
-    }
-  });
-  await Promise.all(runners);
 }

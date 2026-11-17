@@ -36,7 +36,7 @@ import type { SteamUpstream } from "./ttl";
 const WEB_API_ORIGIN = "https://api.steampowered.com";
 const STORE_ORIGIN = "https://store.steampowered.com";
 
-/** Steam Web API methods SteamLite is allowed to call (architecture doc 4.2). */
+/** Steam Web API methods SteamGauge is allowed to call (architecture doc 4.2). */
 const WEB_API_METHODS = {
   GetPlayerSummaries: "/ISteamUser/GetPlayerSummaries/v2/",
   GetFriendList: "/ISteamUser/GetFriendList/v1/",
@@ -46,9 +46,34 @@ const WEB_API_METHODS = {
   GetPlayerAchievements: "/ISteamUserStats/GetPlayerAchievements/v1/",
   GetSchemaForGame: "/ISteamUserStats/GetSchemaForGame/v2/",
   GetNewsForApp: "/ISteamNews/GetNewsForApp/v2/",
+  /** Public wishlist: appid, priority, date_added only. Keyless on Steam's side. */
+  GetWishlist: "/IWishlistService/GetWishlist/v1/",
+  /** Store data for up to 50 apps per call: name, assets, release, reviews, price. */
+  GetItems: "/IStoreBrowseService/GetItems/v1/",
+  /**
+   * Review summary for one app. Replaced store.steampowered.com/appreviews,
+   * which Valve retired on 2026-10-22. Keyless: see KEYLESS_METHODS.
+   */
+  GetAppReviews: "/IUserReviewsService/GetAppReviews/v1/",
+  /**
+   * Steam's own store query: the source of the deals pool (discounted apps
+   * among the global top sellers), with store data for each app.
+   */
+  StoreQuery: "/IStoreQueryService/Query/v1/",
+  /** Live concurrent players for one app. */
+  GetNumberOfCurrentPlayers: "/ISteamUserStats/GetNumberOfCurrentPlayers/v1/",
+  /** Every Steam store tag's id and name, to label the tag ids GetItems returns. */
+  GetTagList: "/IStoreService/GetTagList/v1/",
 } as const;
 
-/** Storefront methods SteamLite is allowed to call. Unauthenticated. */
+/**
+ * Methods called WITHOUT our API key. Steam documents the key for
+ * GetAppReviews as optional and meant for the app's own publisher, so sending
+ * ours gains nothing and only exposes it in one more URL.
+ */
+const KEYLESS_METHODS: ReadonlySet<string> = new Set(["GetAppReviews"]);
+
+/** Storefront methods SteamGauge is allowed to call. Unauthenticated. */
 const STORE_METHODS = {
   appdetails: "/api/appdetails",
   featuredcategories: "/api/featuredcategories",
@@ -144,7 +169,8 @@ export type SteamParams = Readonly<Record<string, string | number | boolean | un
 
 export interface AttemptContext {
   readonly upstream: SteamUpstream;
-  readonly method: SteamMethod;
+  /** A Steam method name, or an ITAD endpoint name when upstream is "itad". */
+  readonly method: string;
   /** 1 for the first try, 2 and 3 for retries. */
   readonly attempt: number;
 }
@@ -175,7 +201,7 @@ export function steamWebApi(
   const url = buildUrl(WEB_API_ORIGIN, path, params, "webapi", method);
   // Steam accepts the key only as a query parameter. This is why URLs are
   // never logged or attached to errors anywhere in this file.
-  url.searchParams.set("key", readApiKey(method));
+  if (!KEYLESS_METHODS.has(method)) url.searchParams.set("key", readApiKey(method));
   url.searchParams.set("format", "json");
   return execute("webapi", method, url, options);
 }

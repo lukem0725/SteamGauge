@@ -3,12 +3,14 @@
  * verifying the session. Same dark surface and card shapes as the pages, so
  * there is no flash of an unstyled or light screen between navigations.
  */
+import { pageContainer } from "@/components/layout-width";
+
 export default function AppLoading() {
   return (
     <div
       aria-busy="true"
       aria-label="Loading"
-      className="mx-auto w-full max-w-5xl space-y-4 px-4 pb-12 pt-5 sm:px-6 lg:px-8"
+      className={`${pageContainer} space-y-4`}
     >
       <div className="flex items-center justify-between gap-3">
         <div className="h-7 w-40 animate-pulse rounded bg-zinc-800" />

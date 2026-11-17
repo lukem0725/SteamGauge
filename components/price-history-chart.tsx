@@ -4,7 +4,7 @@
  * components/price-history-chart.tsx
  *
  * A single-series price chart: what the store charged over time, as recorded
- * by SteamLite (lib/price-history.ts).
+ * by SteamGauge (lib/price-history.ts).
  *
  *   - Step line. A price holds until it changes, so the line is flat between
  *     observations rather than sloping between them.
@@ -28,8 +28,19 @@ const SERIES_COLOR = "#3987e5";
 const LOW_COLOR = "#0ca30c";
 const SURFACE_COLOR = "#18181c";
 
-/** Days shown. Older observations still count toward the recorded low. */
-const WINDOW_DAYS = 180;
+/**
+ * Time ranges. All four buttons are always shown; "All" is the default, so a
+ * multi-year history shows its full trend first. A range longer than the
+ * history is disabled (it would look the same as "All"), with the start date
+ * in its tooltip.
+ */
+const RANGES = [
+  { id: "6m", label: "6M", days: 183 },
+  { id: "1y", label: "1Y", days: 365 },
+  { id: "2y", label: "2Y", days: 730 },
+  { id: "all", label: "All", days: null },
+] as const;
+type RangeId = (typeof RANGES)[number]["id"];
 const DAY_MS = 86_400_000;
 
 export interface PriceHistoryChartProps {
@@ -40,10 +51,15 @@ export interface PriceHistoryChartProps {
 
 export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryChartProps) {
   const [active, setActive] = useState<number | null>(null);
+  const [rangeId, setRangeId] = useState<RangeId>("all");
 
   const currency = history.currency ?? "USD";
   const today = startOfUtcDay(now.getTime());
-  const points = history.points.filter((p) => toMs(p.date) >= today - WINDOW_DAYS * DAY_MS);
+  const firstMs = history.points[0] ? toMs(history.points[0].date) : today;
+  const covers = (r: (typeof RANGES)[number]) => r.days === null || firstMs < today - r.days * DAY_MS;
+  const selected = RANGES.find((r) => r.id === rangeId);
+  const range = selected && covers(selected) ? selected : RANGES[RANGES.length - 1]!;
+  const points = windowPoints(history.points, range.days === null ? null : today - range.days * DAY_MS);
 
   if (points.length === 0) {
     return (
@@ -261,7 +277,39 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
         className="ml-14 mt-1.5 flex justify-between text-[10px] leading-none text-zinc-500"
       >
         <span>{formatDay(first.date, now)}</span>
+        {xEnd - xStart > 400 * DAY_MS ? (
+          <span>{formatDay(new Date((xStart + xEnd) / 2).toISOString().slice(0, 10), now)}</span>
+        ) : null}
         <span>Today</span>
+      </div>
+
+      <div role="group" aria-label="Time range" className="ml-14 mt-2 flex flex-wrap items-center gap-1">
+        {RANGES.map((r) => {
+          const available = covers(r);
+          return (
+            <button
+              key={r.id}
+              type="button"
+              aria-pressed={r.id === range.id}
+              disabled={!available}
+              title={available ? undefined : `History starts ${formatDay(first.date, now)}`}
+              onClick={() => {
+                setRangeId(r.id);
+                setActive(null);
+              }}
+              className={`min-h-8 rounded-md px-2.5 text-xs font-medium tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent ${
+                r.id === range.id
+                  ? "bg-zinc-700 text-zinc-50"
+                  : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+              }`}
+            >
+              {r.label}
+            </button>
+          );
+        })}
+        <span className="ml-1 text-[11px] text-zinc-600">
+          {range.days === null ? `Since ${formatDay(first.date, now)}` : null}
+        </span>
       </div>
 
       {/* Table view: every value in the chart, without hovering. */}
@@ -355,4 +403,19 @@ export function formatDay(day: string, now: Date = new Date()): string {
     timeZone: "UTC",
     ...(date.getUTCFullYear() !== now.getUTCFullYear() ? { year: "numeric" } : {}),
   });
+}
+
+/**
+ * Points inside the window. A step line needs the price in force when the
+ * window opens, so the last point before it is carried forward to its start.
+ * Exported for tests.
+ */
+export function windowPoints(points: readonly PricePoint[], startMs: number | null): PricePoint[] {
+  if (startMs === null) return [...points];
+  const inside = points.filter((p) => toMs(p.date) >= startMs);
+  const before = points.filter((p) => toMs(p.date) < startMs).at(-1);
+  if (!before) return inside;
+  const startDay = new Date(startMs).toISOString().slice(0, 10);
+  if (inside[0]?.date === startDay) return inside;
+  return [{ ...before, date: startDay }, ...inside];
 }

@@ -1,126 +1,57 @@
 /**
  * lib/deals.ts
  *
- * Builds the "Bang for Your Buck" deals ranking for one signed-in user.
+ * Builds the deals table for one signed-in user.
  *
- *   1. Trending discounts   getStoreSpecials()   1 Storefront call, shared 1 h
- *   2. The user's library   getOwnedGames()      1 Web API call, cached 1 h
- *   3. Genres               getAppDetails()      per sale item and per sampled
- *                                                backlog game, shared 24 h
+ * Steam first, SteamDB style. The pool is Steam's own answer to "which of
+ * the global top 1,000 sellers are discounted right now", from
+ * IStoreQueryService/Query: 5 cached pages of 200, each already carrying
+ * Steam's price, discount, sale end, release date and review totals.
  *
- * Every read goes through `cachedFetch`, so the quota governor, leases and
- * stale-while-revalidate all apply. Nothing here talks to Steam directly.
+ * IsThereAnyDeal only enriches that pool, looked up by Steam AppID: the
+ * Steam all-time low, the 1-year low at any store, and the cheapest current
+ * price at another store. Without ITAD_API_KEY the table is the same minus
+ * those (no price badges).
  *
- * Score: cost per hour = sale price / completion time, lower is better. The
- * completion time is SIMULATED (lib/value.ts); there is no real length data
- * source yet, and the payload says so (`lengthIsSimulated`).
+ * If Steam's query fails for every page, the table falls back to Steam's
+ * featured specials (a few dozen games), enriched the same way.
+ *
+ * Steam review totals come from the batched GetItems call. Rows it left
+ * without them are filled from the per-app review cache and a few bounded
+ * GetAppReviews lookups per request (lib/steam/review-backfill.ts), so the
+ * "Top deals" order and the review filters have data to work with.
+ *
+ * Then, per user: owned (library), wished (Steam wishlist) and watched
+ * (SteamGauge watchlist) flags. Every Steam and ITAD read goes through the
+ * cached-fetch pipeline; the shared deal pages are fetched about once an hour
+ * for all users together.
+ *
+ * Filtering, sorting and paging happen in the browser (lib/deals-table.ts),
+ * so changing a filter costs no request.
  */
 import "server-only";
 
-import { CachedFetchError, type CachedResult } from "@/lib/steam/cached-fetch";
+import { computeBadges, type DealRow, type DealsPayload } from "@/lib/deals-table";
+import { CachedFetchError, type CacheMeta, type CachedResult } from "@/lib/steam/cached-fetch";
+import { backfillReviews } from "@/lib/steam/review-backfill";
 import {
-  getAppDetails,
+  getDealsFallback,
+  getSalePage,
   getOwnedGames,
-  getStoreSpecials,
+  getSteamWishlistIds,
+  type DealRecord,
+  type DealsPageData,
   type EndpointContext,
-  type SaleItem,
 } from "@/lib/steam/endpoints";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { DEFAULT_COUNTRY_CODE } from "@/lib/validation";
-import { costPerHour, rateValue, simulatedHoursToBeat, type ValueLevel } from "@/lib/value";
 
-// =============================================================================
-// Types (also imported, as types only, by components/deals-view.tsx)
-// =============================================================================
-
-export interface BacklogGenreMatch {
-  readonly genre: string;
-  /** How many of the user's sampled unplayed games have this genre. */
-  readonly unplayedCount: number;
-}
-
-export interface Deal {
-  /** 1 is the best value. */
-  readonly rank: number;
-  readonly appid: number;
-  readonly name: string;
-  readonly headerImage: string | null;
-  readonly currency: string;
-  /** Prices are in the currency's minor unit (cents). */
-  readonly originalPrice: number;
-  readonly finalPrice: number;
-  readonly discountPercent: number;
-  readonly discountEndsAt: string | null;
-  /** SIMULATED completion time in hours. */
-  readonly estimatedHours: number;
-  /** The utility score: finalPrice / estimatedHours, in cents. Lower is better. */
-  readonly centsPerHour: number;
-  readonly valueLevel: ValueLevel;
-  readonly valueLabel: string;
-  /** Null when the genres could not be loaded (for example store budget spent). */
-  readonly genres: readonly string[] | null;
-  /** True if the user already owns this game. */
-  readonly owned: boolean;
-  /** True if this game is on the user's wishlist. */
-  readonly watched: boolean;
-  /**
-   * Set when the user does not own this game but already has unplayed games
-   * in one or more of its genres. Most-crowded genre first.
-   */
-  readonly backlogMatches: readonly BacklogGenreMatch[] | null;
-}
-
-export interface DealsBacklogSummary {
-  /**
-   * "ok"           Backlog compared against the deals.
-   * "private"      The user's game details are private: no warnings possible.
-   * "unavailable"  The library could not be loaded right now: no warnings.
-   */
-  readonly status: "ok" | "private" | "unavailable";
-  /** Games with exactly 0 minutes played. */
-  readonly unplayedCount: number;
-  /** How many of those had their genres checked (capped, see BACKLOG_SAMPLE_LIMIT). */
-  readonly analyzedCount: number;
-}
-
-export interface DealsPayload {
-  readonly deals: readonly Deal[];
-  readonly backlog: DealsBacklogSummary;
-  /** Always true until a real completion-time source replaces lib/value.ts. */
-  readonly lengthIsSimulated: true;
-}
-
-// =============================================================================
-// Tunables
-// =============================================================================
+/** Sale pages of 200. 5 pages cover the whole top-1,000-sellers pool. */
+export const SALE_PAGES = 5;
 
 /**
- * At most this many unplayed games have their genres looked up. Each lookup
- * can cost one Storefront call on a cold cache, and that budget is 150 per
- * 5 minutes for the whole app. The sample is the first N by name, the same
- * games the dashboard's backlog deck shows, so the two pages share cache.
- */
-const BACKLOG_SAMPLE_LIMIT = 24;
-
-/** Parallel detail lookups. Keeps a cold request quick without a burst. */
-const DETAIL_CONCURRENCY = 4;
-
-/** At most this many genres are named in one warning. */
-const MAX_MATCHES_PER_DEAL = 3;
-
-/** Store labels that are business models or release states, not genres. */
-const NOT_REAL_GENRES = new Set(["free to play", "early access"]);
-
-// =============================================================================
-// buildDeals
-// =============================================================================
-
-/**
- * @param session  The verified user. Required: the result is personalised.
- * @returns the ranking in our standard envelope. `meta` describes the age of
- *          the sale list itself.
- * @throws CachedFetchError if the sale list cannot be served at all. Missing
- *         library or genre data only degrades the result; it never throws.
+ * @throws CachedFetchError if no deal page at all can be served. Missing
+ *         library, wishlist or watchlist data only removes those flags.
  */
 export async function buildDeals(
   session: { readonly steamid: string },
@@ -128,131 +59,145 @@ export async function buildDeals(
 ): Promise<CachedResult<DealsPayload>> {
   const ctx: EndpointContext = { session, waitUntil: context.waitUntil };
 
-  const [specials, library, watchedAppids] = await Promise.all([
-    getStoreSpecials(DEFAULT_COUNTRY_CODE, ctx),
-    loadLibrary(session.steamid, ctx),
-    loadWatchedAppids(session.steamid),
+  const [pages, owned, wishlist, watched] = await Promise.all([
+    loadDealPages(ctx),
+    loadOwned(session.steamid, ctx),
+    loadSteamWishlist(session.steamid, ctx),
+    loadWatched(session.steamid),
   ]);
 
-  const saleItems: readonly SaleItem[] = specials.status === "ok" ? specials.data.items : [];
+  const seen = new Set<number>();
+  const unique = pages.deals.filter((deal) => !seen.has(deal.appid) && seen.add(deal.appid));
 
-  const backlogSample = library.unplayed.slice(0, BACKLOG_SAMPLE_LIMIT);
-  const appids = [
-    ...new Set([...saleItems.map((item) => item.appid), ...backlogSample.map((g) => g.appid)]),
-  ];
-  const genresByApp = await loadGenres(appids, ctx);
-
-  // How many sampled unplayed games carry each genre.
-  const backlogGenreCounts = new Map<string, BacklogGenreMatch>();
-  let analyzedCount = 0;
-  for (const game of backlogSample) {
-    const genres = genresByApp.get(game.appid);
-    if (!genres) continue;
-    analyzedCount++;
-    for (const genre of genres) {
-      const key = genre.toLowerCase();
-      const current = backlogGenreCounts.get(key);
-      backlogGenreCounts.set(key, { genre, unplayedCount: (current?.unplayedCount ?? 0) + 1 });
-    }
-  }
-
-  const scored = saleItems.map((item) => {
-    const estimatedHours = simulatedHoursToBeat(item.appid);
-    const centsPerHour = costPerHour(item.finalPrice, estimatedHours);
-    const rating = rateValue(centsPerHour);
-    const genres = genresByApp.get(item.appid) ?? null;
-    const owned = library.ownedAppids.has(item.appid);
-
-    const matches =
-      owned || !genres
-        ? []
-        : genres
-            .map((genre) => backlogGenreCounts.get(genre.toLowerCase()))
-            .filter((match): match is BacklogGenreMatch => match !== undefined)
-            .sort((a, b) => b.unplayedCount - a.unplayedCount || a.genre.localeCompare(b.genre))
-            .slice(0, MAX_MATCHES_PER_DEAL);
-
-    return {
-      appid: item.appid,
-      name: item.name,
-      headerImage: item.headerImage,
-      currency: item.currency,
-      originalPrice: item.originalPrice,
-      finalPrice: item.finalPrice,
-      discountPercent: item.discountPercent,
-      discountEndsAt: item.discountEndsAt,
-      estimatedHours,
-      centsPerHour,
-      valueLevel: rating.level,
-      valueLabel: rating.label,
-      genres,
-      owned,
-      watched: watchedAppids.has(item.appid),
-      backlogMatches: matches.length > 0 ? matches : null,
-    };
-  });
-
-  // Best value first. Ties: the deeper discount, then name, for a stable order.
-  scored.sort(
-    (a, b) =>
-      a.centsPerHour - b.centsPerHour ||
-      b.discountPercent - a.discountPercent ||
-      a.name.localeCompare(b.name),
+  // Games before DLC, otherwise Steam's own order, so the rows most likely
+  // to be looked at are filled in first. Array.prototype.sort is stable.
+  const reviewOrder = [...unique].sort(
+    (a, b) => Number(b.type === "game") - Number(a.type === "game"),
   );
+  const reviews = await backfillReviews(reviewOrder, ctx);
+
+  const rows: DealRow[] = [];
+  for (const record of unique) {
+    const summary = reviews.summaries.get(record.appid);
+    const deal: DealRecord = summary
+      ? {
+          ...record,
+          reviewCount: summary.count,
+          reviewPercent: summary.percent,
+          reviewLabel: summary.label,
+        }
+      : record;
+    rows.push({
+      ...deal,
+      owned: owned ? owned.has(deal.appid) : null,
+      wished: wishlist.appids.has(deal.appid),
+      watched: watched.has(deal.appid),
+      badges: computeBadges(deal),
+    });
+  }
 
   return {
     status: "ok",
     data: {
-      deals: scored.map((deal, index) => ({ rank: index + 1, ...deal })),
-      backlog: {
-        status: library.status,
-        unplayedCount: library.unplayed.length,
-        analyzedCount,
-      },
-      lengthIsSimulated: true,
+      rows,
+      source: pages.source,
+      lowsAvailable: pages.lowsAvailable,
+      ownershipKnown: owned !== null,
+      steamWishlist: wishlist.status,
+      missingStoreData: pages.missingStoreData,
+      partial: pages.partial,
+      reviewsPending: reviews.pending,
     },
-    meta: specials.meta,
+    meta: pages.meta,
   };
 }
 
 // =============================================================================
-// Helpers
+// Loaders
 // =============================================================================
 
-interface LibraryView {
-  readonly status: DealsBacklogSummary["status"];
-  readonly ownedAppids: ReadonlySet<number>;
-  /** Games with 0 minutes played, sorted by name. */
-  readonly unplayed: readonly { readonly appid: number; readonly name: string }[];
+interface LoadedPages {
+  readonly source: "steam" | "featured";
+  readonly lowsAvailable: boolean;
+  readonly deals: readonly DealRecord[];
+  readonly missingStoreData: number;
+  readonly partial: boolean;
+  readonly meta: CacheMeta;
 }
 
-const NO_LIBRARY = { ownedAppids: new Set<number>(), unplayed: [] } as const;
+async function loadDealPages(ctx: EndpointContext): Promise<LoadedPages> {
+  const settled = await Promise.allSettled(
+    Array.from({ length: SALE_PAGES }, (_, page) => getSalePage(page, DEFAULT_COUNTRY_CODE, ctx)),
+  );
+  const results = settled.flatMap((entry) => (entry.status === "fulfilled" ? [entry.value] : []));
+  if (results.some((result) => result.status === "ok" && result.data.deals.length > 0)) {
+    if (results.length < settled.length) logDeals("pages_partial", settled.length - results.length);
+    return fromResults(results, results.length < settled.length, "steam");
+  }
 
-/** The deals list is still useful without the library, so this never throws. */
-async function loadLibrary(steamid: string, ctx: EndpointContext): Promise<LibraryView> {
+  // Steam's sale query failed (or returned nothing): use its featured specials.
+  logDeals("sale_query_unavailable");
   try {
-    const library = await getOwnedGames(steamid, ctx);
-    if (library.status !== "ok") return { status: "private", ...NO_LIBRARY };
-
-    return {
-      status: "ok",
-      ownedAppids: new Set(library.data.games.map((game) => game.appid)),
-      unplayed: library.data.games
-        .filter((game) => game.playtimeMinutes === 0)
-        .map((game) => ({ appid: game.appid, name: game.name }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    };
+    const fallback = await getDealsFallback(DEFAULT_COUNTRY_CODE, ctx);
+    return fromResults([fallback], false, "featured");
   } catch (err) {
-    logDeals("library_unavailable", err);
-    return { status: "unavailable", ...NO_LIBRARY };
+    const first = settled.find((entry) => entry.status === "rejected");
+    if (err instanceof CachedFetchError) throw err;
+    throw first && first.status === "rejected" && first.reason instanceof CachedFetchError
+      ? first.reason
+      : new CachedFetchError("internal", "salePage");
   }
 }
 
-/**
- * Which apps are on this user's wishlist. One small query, always filtered
- * by the session's SteamID. A failure only hides the "In wishlist" state.
- */
-async function loadWatchedAppids(steamid: string): Promise<ReadonlySet<number>> {
+function fromResults(
+  results: readonly CachedResult<DealsPageData>[],
+  partial: boolean,
+  source: "steam" | "featured",
+): LoadedPages {
+  const ok = results.flatMap((result) => (result.status === "ok" ? [result.data] : []));
+  const deals = ok.flatMap((page) => page.deals);
+  const missingStoreData = ok.reduce((sum, page) => sum + page.missingStoreData, 0);
+  const lowsAvailable = ok.some((page) => page.lowsAvailable);
+  // Report the oldest page, and "stale" if any page is being refreshed.
+  const metas = results.map((result) => result.meta);
+  const oldest = metas.reduce((a, b) => (Date.parse(a.fetchedAt) <= Date.parse(b.fetchedAt) ? a : b));
+  const meta: CacheMeta = {
+    source: metas.every((m) => m.source === "steam") ? "steam" : "cache",
+    fetchedAt: oldest.fetchedAt,
+    stale: metas.some((m) => m.stale),
+  };
+  return { source, lowsAvailable, deals, missingStoreData, partial, meta };
+}
+
+async function loadOwned(steamid: string, ctx: EndpointContext): Promise<ReadonlySet<number> | null> {
+  try {
+    const library = await getOwnedGames(steamid, ctx);
+    return library.status === "ok" ? new Set(library.data.games.map((game) => game.appid)) : null;
+  } catch {
+    logDeals("library_unavailable");
+    return null;
+  }
+}
+
+async function loadSteamWishlist(
+  steamid: string,
+  ctx: EndpointContext,
+): Promise<{ status: DealsPayload["steamWishlist"]; appids: ReadonlySet<number> }> {
+  try {
+    const wishlist = await getSteamWishlistIds(steamid, ctx);
+    if (wishlist.status !== "ok") return { status: "unavailable", appids: new Set() };
+    return {
+      status: wishlist.data.status,
+      appids: new Set(wishlist.data.items.map((item) => item.appid)),
+    };
+  } catch {
+    logDeals("steam_wishlist_unavailable");
+    return { status: "unavailable", appids: new Set() };
+  }
+}
+
+/** The user's SteamGauge watchlist, always filtered by the session's SteamID. */
+async function loadWatched(steamid: string): Promise<ReadonlySet<number>> {
   try {
     const { data, error } = await getSupabaseAdmin()
       .from("tracked_apps")
@@ -266,74 +211,13 @@ async function loadWatchedAppids(steamid: string): Promise<ReadonlySet<number>> 
         .map((row) => (row as { appid?: unknown } | null)?.appid)
         .filter((appid): appid is number => Number.isInteger(appid)),
     );
-  } catch (err) {
-    logDeals("wishlist_unavailable", err);
+  } catch {
+    logDeals("wishlist_unavailable");
     return new Set();
   }
 }
 
-/**
- * Genres for each app, through the shared 24-hour app-details cache. An app
- * whose details cannot be loaded (unknown, region-locked, store budget spent)
- * is simply absent from the map.
- */
-async function loadGenres(
-  appids: readonly number[],
-  ctx: EndpointContext,
-): Promise<Map<number, readonly string[]>> {
-  const result = new Map<number, readonly string[]>();
-  let failures = 0;
-
-  await mapWithConcurrency(appids, DETAIL_CONCURRENCY, async (appid) => {
-    try {
-      const details = await getAppDetails(appid, DEFAULT_COUNTRY_CODE, ctx);
-      if (details.status === "ok") {
-        result.set(
-          appid,
-          details.data.genres.filter((genre) => !NOT_REAL_GENRES.has(genre.toLowerCase())),
-        );
-      }
-    } catch {
-      failures++;
-    }
-  });
-
-  if (failures > 0) logDeals("genres_partial", undefined, failures);
-  return result;
-}
-
-async function mapWithConcurrency<T>(
-  items: readonly T[],
-  limit: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  let next = 0;
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const item = items[next++] as T;
-      await worker(item);
-    }
-  });
-  await Promise.all(runners);
-}
-
 /** Fixed labels only: no SteamID, cache key, or raw error message. */
-function logDeals(event: string, err?: unknown, count?: number): void {
-  console.error(
-    JSON.stringify({
-      scope: "deals",
-      event,
-      ...(err !== undefined
-        ? {
-            label:
-              err instanceof CachedFetchError
-                ? err.reason
-                : err instanceof Error
-                  ? err.name
-                  : "non_error",
-          }
-        : {}),
-      ...(count !== undefined ? { count } : {}),
-    }),
-  );
+function logDeals(event: string, count?: number): void {
+  console.error(JSON.stringify({ scope: "deals", event, ...(count !== undefined ? { count } : {}) }));
 }
