@@ -70,6 +70,7 @@ export interface TtlPolicy {
  * | steamTags            | 7 d    | 30 d  | IStoreService/GetTagList                |
  * | itadAppPrices        | 1 h    | 24 h  | ITAD lookup + prices at every store     |
  * | storeSearch          | 24 h   | 7 d   | Storefront storesearch + GetItems       |
+ * | itadId               | 30 d   | 90 d  | ITAD lookup (Steam AppID -> ITAD id)    |
  */
 export const TTL = {
   playerSummary:      { freshSeconds: 5 * MINUTE,  staleSeconds: 24 * HOUR, upstream: "webapi", scope: "player" },
@@ -99,6 +100,10 @@ export const TTL = {
   itadAppPrices:      { freshSeconds: 1 * HOUR,    staleSeconds: 24 * HOUR, upstream: "itad",   scope: "global" },
   // Global search: one entry per normalised query, shared by every user.
   storeSearch:        { freshSeconds: 24 * HOUR,   staleSeconds: 7 * DAY,   upstream: "store",  scope: "global" },
+  // An ITAD game id never changes for a Steam app. Cached so the price and
+  // history refreshes for an expanded row skip the lookup call (v1.9); the
+  // Deals and Wishlist refreshes fill it for every app they look up.
+  itadId:             { freshSeconds: 30 * DAY,    staleSeconds: 90 * DAY,  upstream: "itad",   scope: "global" },
 } as const satisfies Record<string, TtlPolicy>;
 
 export type SteamResource = keyof typeof TTL;
@@ -204,6 +209,7 @@ export const cacheKey = {
   itadAppPrices: (appid: number, cc: string) => `app:${appid}:itad-prices:v2:${cc.toLowerCase()}`,
   // The term is already normalised (lib/title-search.ts): lowercase a-z 0-9 and spaces.
   storeSearch: (cc: string, term: string) => `search:${cc.toLowerCase()}:${term}`,
+  itadId: (appid: number) => `app:${appid}:itad-id`,
 } as const satisfies Record<SteamResource, (...args: never[]) => string>;
 
 /** Short, stable, non-cryptographic hash for cache keys (FNV-1a, 32-bit). */

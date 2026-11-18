@@ -59,8 +59,11 @@ export interface EndpointContext {
   readonly session?: { readonly steamid: string } | null;
   /** In a Route Handler: `(work) => after(() => work)` from next/server. */
   readonly waitUntil?: (work: Promise<void>) => void;
-  /** "cron" for warm-up jobs. Default "interactive". */
-  readonly priority?: "interactive" | "cron";
+  /**
+   * "cron" for warm-up jobs; "prefetch" for hover prefetches, which may only
+   * use the lower prefetch ceilings on a cache miss. Default "interactive".
+   */
+  readonly priority?: "interactive" | "cron" | "prefetch";
 }
 
 /** An https URL, or null when the field is missing or is anything else. */

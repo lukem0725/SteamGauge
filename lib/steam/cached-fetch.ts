@@ -38,10 +38,12 @@ import {
   fetchSalePage,
   fetchItadAppPrices,
   fetchItadHistory,
+  fetchItadId,
   fetchSteamWishlistIds,
   fetchWishlistView,
 } from "./composites";
 import { storeMetaInput } from "./insights";
+import { memoryCache, type MemoryRow } from "./memory-cache";
 import { fetchStoreSearch } from "./search";
 import {
   REFRESH_LEASE_SECONDS,
@@ -88,8 +90,13 @@ export interface CachedFetchOptions<R extends SteamResource, T> {
    * Signed-in users also get the highest quota tier on a cache miss.
    */
   readonly session?: { readonly steamid: string } | null;
-  /** "cron" marks warm-up jobs: lowest quota tier. Default "interactive". */
-  readonly priority?: "interactive" | "cron";
+  /**
+   * "cron" marks warm-up jobs: lowest quota tier. "prefetch" marks a guess
+   * that the user is about to open something (hovering a Deals row): on a
+   * miss it may only use the lower prefetch ceilings, so speculative loads
+   * can never use up the budget real clicks need. Default "interactive".
+   */
+  readonly priority?: "interactive" | "cron" | "prefetch";
   /**
    * Keeps the serverless function alive until a background refresh finishes.
    * In a Route Handler pass Next.js's `after`:
@@ -177,12 +184,19 @@ const WEBAPI_DAY_CEILING = {
   anonymous: 72_000,
   /** Cache miss, signed-in user: 100% of our self-imposed limit. */
   signedIn: 80_000,
+  /** Hover prefetch (v1.9): speculative, so it stops where background work does. */
+  prefetch: 56_000,
 } as const;
 const WEBAPI_MINUTE_CEILING = 120;
-const STORE_FIVE_MINUTE_CEILING = 150;
+/**
+ * The Storefront budget (150 per 5 minutes) is the tightest and is shared by
+ * every user. Prefetches may use at most 90 of it, so a few people sweeping
+ * the mouse down the Deals table cannot leave nothing for actual clicks.
+ */
+const STORE_FIVE_MINUTE_CEILING = { prefetch: 90, other: 150 } as const;
 /**
  * IsThereAnyDeal allows 1,000 requests per 5 minutes per key. Background
- * refreshes stop at 450 so people using the app always have room.
+ * refreshes and prefetches stop at 450 so people using the app always have room.
  */
 const ITAD_FIVE_MINUTE_CEILING = { background: 450, interactive: 600 } as const;
 
@@ -230,6 +244,16 @@ export interface UpstreamIO {
   webApi(method: SteamWebApiMethod, params: SteamParams): Promise<unknown>;
   store(method: SteamStoreMethod, params: SteamParams): Promise<unknown>;
   itad(endpoint: ItadEndpoint, request: ItadRequest): Promise<unknown>;
+  /**
+   * The cached Steam AppID -> ITAD id map (resource `itadId`, v1.9). The
+   * engine always provides it; it is optional so tests can pass a bare io.
+   */
+  readonly itadIds?: {
+    /** The cached id, or undefined when unknown. Never calls ITAD. */
+    get(appid: number): Promise<string | undefined>;
+    /** Records ids found by a lookup. Written before the refresh finishes. */
+    remember(ids: ReadonlyMap<number, string>): void;
+  };
 }
 
 type RequestPlan =
@@ -276,6 +300,7 @@ const REQUESTS: { readonly [R in SteamResource]: (...args: KeyArgs<R>) => Reques
   steamTags: (language) => web("GetTagList", { language }),
   itadAppPrices: (appid, cc) => composite((io) => fetchItadAppPrices(io, appid, cc)),
   storeSearch: (cc, term) => composite((io) => fetchStoreSearch(io, term, cc)),
+  itadId: (appid) => composite((io) => fetchItadId(io, appid)),
   appReviews: (appid) =>
     web("GetAppReviews", {
       input_json: JSON.stringify({
@@ -320,8 +345,15 @@ export async function peekCached<R extends SteamResource>(
   const keys = argsList.map((args) => keyOf(...(args as readonly unknown[])));
   const found = new Map<string, CacheRow>();
 
+  // This instance's memory first (fresh or stale, as from Postgres); only the
+  // rest are read from the database.
+  for (const key of new Set(keys)) {
+    const row = memoryCache.get(key, false);
+    if (row) found.set(key, row);
+  }
+
   try {
-    const unique = [...new Set(keys)];
+    const unique = [...new Set(keys)].filter((key) => !found.has(key));
     for (let i = 0; i < unique.length; i += PEEK_CHUNK) {
       const result = await getSupabaseAdmin()
         .from("api_cache")
@@ -333,7 +365,10 @@ export async function peekCached<R extends SteamResource>(
       }
       for (const row of Array.isArray(result.data) ? (result.data as unknown[]) : []) {
         const key = (row as { key?: unknown } | null)?.key;
-        if (typeof key === "string" && isCacheRow(row)) found.set(key, row);
+        if (typeof key === "string" && isCacheRow(row)) {
+          found.set(key, row);
+          if (isServable(row)) memoryCache.set(key, row);
+        }
       }
     }
   } catch (err) {
@@ -397,9 +432,14 @@ export async function cachedFetch<R extends SteamResource, T>(
     onRefreshed: options.onRefreshed,
   };
 
+  // L1.5: this instance's memory, fresh entries only (lib/steam/memory-cache.ts).
+  const remembered = memoryCache.get(key, true);
+  if (remembered && isCacheRow(remembered)) return fromRow<T>(remembered, false);
+
   const row = await readRow(ctx);
 
   if (row && isServable(row)) {
+    memoryCache.set(key, row);
     if (classifyFreshness(row) === "fresh") {
       return fromRow<T>(row, false);
     }
@@ -410,7 +450,13 @@ export async function cachedFetch<R extends SteamResource, T>(
 
   // Miss, expired, or an empty placeholder left by a failed first fetch.
   const tier: QuotaTier =
-    priority === "cron" ? "background" : session ? "signedIn" : "anonymous";
+    priority === "cron"
+      ? "background"
+      : priority === "prefetch"
+        ? "prefetch"
+        : session
+          ? "signedIn"
+          : "anonymous";
   return blockingRefresh(ctx, tier, row !== null);
 }
 
@@ -441,10 +487,15 @@ async function blockingRefresh<T>(
   try {
     return await refreshFromSteam(ctx, tier);
   } catch (err) {
-    // The lease is deliberately not released. Until it expires (at most
-    // 15 s) other requests for this key wait instead of repeating a call
+    const failure = toCachedFetchError(err, ctx.resource);
+    // A prefetch refused by its lower budget ceiling (v1.9) made no upstream
+    // call, and the click that may follow has more budget. Release the lease
+    // at once so that click is not made to wait 15 s behind a guess.
+    if (tier === "prefetch" && failure.reason === "quota_exhausted") await releaseLease(ctx);
+    // Otherwise the lease is deliberately not released. Until it expires (at
+    // most 15 s) other requests for this key wait instead of repeating a call
     // that just failed.
-    throw toCachedFetchError(err, ctx.resource);
+    throw failure;
   }
 }
 
@@ -453,7 +504,10 @@ async function pollForRow<T>(ctx: ReadContext<T>): Promise<CacheRow | null> {
     await delay(POLL_INTERVAL_MS);
     try {
       const row = await readRow(ctx);
-      if (row && isServable(row)) return row;
+      if (row && isServable(row)) {
+        memoryCache.set(ctx.key, row);
+        return row;
+      }
     } catch {
       return null;
     }
@@ -544,10 +598,19 @@ async function refreshFromSteam<T>(ctx: ReadContext<T>, tier: QuotaTier): Promis
     signal: AbortSignal.timeout(REFRESH_DEADLINE_MS),
   };
 
+  // ITAD ids found during this refresh, written before it returns so a
+  // serverless platform cannot drop them.
+  const idWrites: Promise<void>[] = [];
   const io: UpstreamIO = {
     webApi: (method, params) => steamWebApi(method, params, requestOptions),
     store: (method, params) => steamStore(method, params, requestOptions),
     itad: (endpoint, request) => itadRequest(endpoint, request, requestOptions),
+    itadIds: {
+      get: readItadId,
+      remember: (ids) => {
+        idWrites.push(writeItadIds(ids));
+      },
+    },
   };
 
   let raw: unknown;
@@ -560,6 +623,7 @@ async function refreshFromSteam<T>(ctx: ReadContext<T>, tier: QuotaTier): Promis
           ? await io.webApi(plan.method, plan.params)
           : await io.store(plan.method, plan.params);
   } catch (err) {
+    await Promise.allSettled(idWrites);
     if (err instanceof SteamError) {
       if (err.shouldOpenBreaker) await tripBreaker(err.upstream, ctx.resource);
       // HTTP-level "private" / "not found": a valid answer. Cache it.
@@ -575,10 +639,11 @@ async function refreshFromSteam<T>(ctx: ReadContext<T>, tier: QuotaTier): Promis
     validated = ctx.validate(raw);
   } catch {
     // The validator's message can quote response content, so it is dropped.
+    await Promise.allSettled(idWrites);
     throw new InvalidPayloadError();
   }
 
-  const result = await writeEntry(ctx, validated);
+  const [result] = await Promise.all([writeEntry(ctx, validated), Promise.allSettled(idWrites)]);
 
   if (validated.status === "ok" && ctx.onRefreshed) {
     try {
@@ -625,10 +690,78 @@ async function writeEntry<T>(ctx: ReadContext<T>, entry: Validated<T>): Promise<
   // write costs the next reader a refetch; it must not fail this one.
   if (error) logCache(ctx.resource, "cache_write_failed", dbLabel(error));
 
+  memoryCache.set(ctx.key, {
+    payload: entry.status === "ok" ? entry.data : null,
+    status: entry.status,
+    fetched_at: expiry.fetchedAt,
+    fresh_until: expiry.freshUntil,
+    stale_until: expiry.staleUntil,
+  });
+
   const meta: CacheMeta = { source: "steam", fetchedAt: expiry.fetchedAt, stale: false };
   return entry.status === "ok"
     ? { status: "ok", data: entry.data, meta }
     : { status: entry.status, data: null, meta };
+}
+
+// =============================================================================
+// ITAD id cache (resource `itadId`, v1.9)
+// =============================================================================
+
+/** Rows per upsert when recording a Deals page's worth of ids. */
+const ID_WRITE_CHUNK = 500;
+
+/** The cached ITAD id for one Steam app, or undefined. Best effort: never throws. */
+async function readItadId(appid: number): Promise<string | undefined> {
+  const key = cacheKey.itadId(appid);
+  let row: MemoryRow | null = memoryCache.get(key, false);
+  if (!row) {
+    try {
+      const result = await getSupabaseAdmin()
+        .from("api_cache")
+        .select("payload,status,fetched_at,fresh_until,stale_until")
+        .eq("key", key)
+        .maybeSingle();
+      const found: unknown = result.error ? null : result.data;
+      if (!isCacheRow(found) || !isServable(found)) return undefined;
+      memoryCache.set(key, found);
+      row = found;
+    } catch {
+      return undefined;
+    }
+  }
+  if (row.status !== "ok") return undefined;
+  const itadId = (row.payload as { itadId?: unknown } | null)?.itadId;
+  return typeof itadId === "string" ? itadId : undefined;
+}
+
+/** Records looked-up ids. Logs and swallows failures: they only cost a lookup later. */
+async function writeItadIds(ids: ReadonlyMap<number, string>): Promise<void> {
+  const expiry = computeExpiry("itadId", "ok");
+  const rows = [...ids].map(([appid, itadId]) => ({
+    key: cacheKey.itadId(appid),
+    payload: { itadId },
+    status: "ok" as const,
+    fetched_at: expiry.fetchedAt,
+    fresh_until: expiry.freshUntil,
+    stale_until: expiry.staleUntil,
+    lease_until: EPOCH,
+    owner_steamid: null,
+  }));
+  for (let i = 0; i < rows.length; i += ID_WRITE_CHUNK) {
+    const batch = rows.slice(i, i + ID_WRITE_CHUNK);
+    try {
+      const { error } = await getSupabaseAdmin().from("api_cache").upsert(batch, { onConflict: "key" });
+      if (error) {
+        logCache("itadId", "cache_write_failed", dbLabel(error));
+        continue;
+      }
+    } catch (err) {
+      logCache("itadId", "cache_write_failed", failureLabel(err));
+      continue;
+    }
+    for (const row of batch) memoryCache.set(row.key, row);
+  }
 }
 
 // =============================================================================
@@ -713,6 +846,15 @@ function fromRow<T>(row: CacheRow, stale: boolean): CachedResult<T> {
  * @returns true if this caller now holds the lease.
  * @throws if Supabase reports an unexpected error.
  */
+/** Best effort: if this fails, the lease simply expires on its own. */
+async function releaseLease<T>(ctx: ReadContext<T>): Promise<void> {
+  try {
+    await getSupabaseAdmin().from("api_cache").update({ lease_until: EPOCH }).eq("key", ctx.key);
+  } catch {
+    // Expires within 15 s anyway.
+  }
+}
+
 async function acquireLease<T>(ctx: ReadContext<T>, rowExists: boolean): Promise<boolean> {
   const db = getSupabaseAdmin();
   const now = Date.now();
@@ -762,12 +904,16 @@ function makeAcquire(tier: QuotaTier): (attempt: AttemptContext) => Promise<bool
     if (upstream === "itad") {
       const window = new Date(Math.floor(now / 300_000) * 300_000);
       const ceiling =
-        tier === "background" ? ITAD_FIVE_MINUTE_CEILING.background : ITAD_FIVE_MINUTE_CEILING.interactive;
+        tier === "background" || tier === "prefetch"
+          ? ITAD_FIVE_MINUTE_CEILING.background
+          : ITAD_FIVE_MINUTE_CEILING.interactive;
       return takeQuota("itad", "5min", window, ceiling);
     }
     if (upstream === "store") {
       const window = new Date(Math.floor(now / 300_000) * 300_000);
-      return takeQuota("store", "5min", window, STORE_FIVE_MINUTE_CEILING);
+      const ceiling =
+        tier === "prefetch" ? STORE_FIVE_MINUTE_CEILING.prefetch : STORE_FIVE_MINUTE_CEILING.other;
+      return takeQuota("store", "5min", window, ceiling);
     }
 
     // Minute first: if the day check then refuses, the unit wasted is one

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | v1.8: Steam colour theme, global game search in the top bar with a game page, title filters on Deals, Dashboard and Wishlist · v1.7.2: store links in the price breakdown, new Deals dropdown layout, duplicate-name fix, 5 features max on Wishlist cards · v1.7.1: Wishlist cards show Genres · v1.7: wider layout (1600px) on every tab; Wishlist facts under the image; Deals dropdown with header image, 3 tags, no Features; title text is the row toggle |
-| **Date** | 2026-11-17 (v1.8); v1.3–v1.7.2: 2026-11-16; v1.2: 2026-11-14 |
+| **Status** | v1.9: performance: hover prefetch, one-frame Deals drawer, in-memory cache, CDN sharing of per-game data, cached ITAD ids, parallel Wishlist refresh · v1.8.1: query client moved to the root layout (fixes the "No QueryClient set" boot crash) · v1.8: Steam colour theme, global game search in the top bar with a game page, title filters on Deals, Dashboard and Wishlist · v1.7.2: store links in the price breakdown, new Deals dropdown layout, duplicate-name fix, 5 features max on Wishlist cards · v1.7.1: Wishlist cards show Genres · v1.7: wider layout (1600px) on every tab; Wishlist facts under the image; Deals dropdown with header image, 3 tags, no Features; title text is the row toggle |
+| **Date** | 2026-11-17 (v1.8–v1.9); v1.3–v1.7.2: 2026-11-16; v1.2: 2026-11-14 |
 | **Scope** | Technical core, data model, Steam data caching strategy, security configuration |
 | **Schema source** | `steamlite_init.sql` (applied in Supabase 2026-11-14), plus `0002_price_history.sql` and `0003_search_steam_apps.sql`. Sections 4.4 and 5.6 mirror them. |
 | **Stack** | React, Tailwind CSS, Next.js (Route Handlers as serverless functions), Supabase (Postgres) |
@@ -98,7 +98,8 @@ Three Web API services added in v1.3–v1.4 need no key and no Storefront budget
 - **Tailwind, mobile-first.** Base styles target about 360px wide; `sm:`/`md:`/`lg:` add layout for larger screens. Touch targets are at least 44px. Long lists (libraries with 1,000+ games) are virtualized.
 - **Images** come from Steam's CDN hosts through `next/image` with an explicit `remotePatterns` allowlist. Image requests do not count against API limits.
 - **Page width (v1.7).** Every signed-in tab, the navigation bar, and the loading and error screens share one width from `components/layout-width.ts` (`max-w-[1600px]`, same side padding as before). It is a plain module so Server Components (`loading.tsx`) can import it. Dashboard grids add columns at `xl`/`2xl` so cards keep their proportions instead of stretching.
-- **App shell.** `app/(app)/layout.tsx` wraps every signed-in page with the dark page surface, the navigation, and one shared TanStack Query client, so data loaded on one page survives navigation and an action on one page can refresh another (watching a game from Deals refreshes the Wishlist, and the reverse). Navigation (`components/app-nav.tsx`) links Dashboard, Deals, and Wishlist: a sticky top bar at 640px and wider, and a fixed bottom tab bar on phones. The current page is marked with `aria-current="page"` as well as colour. The layout does not check the session; each page does, because layouts are not re-rendered on every navigation. `loading.tsx` and `error.tsx` in the same folder keep the wait and failure screens in the same dark design; the error screen never shows the error's message.
+- **Query client (v1.8.1).** `components/providers.tsx` creates one TanStack Query client (created in `useState`, never at module level, so server renders never share a cache between users) with the app's defaults. `app/layout.tsx` wraps everything inside `<body>` in it. It must sit above the navigation: v1.8 put the global search inside the nav while the client was still provided lower down, in the app shell around page content only, and every page crashed on boot with "No QueryClient set". A test now renders the root layout, app shell, nav and each page together with a stub that fails like the real library when no provider is present.
+- **App shell.** `app/(app)/layout.tsx` wraps every signed-in page with the dark page surface and the navigation. All pages and the nav share the root query client, so data loaded on one page survives navigation and an action on one page can refresh another (watching a game from Deals refreshes the Wishlist, and the reverse). Navigation (`components/app-nav.tsx`) links Dashboard, Deals, and Wishlist: a sticky top bar at 640px and wider, and a fixed bottom tab bar on phones. The current page is marked with `aria-current="page"` as well as colour. The layout does not check the session; each page does, because layouts are not re-rendered on every navigation. `loading.tsx` and `error.tsx` in the same folder keep the wait and failure screens in the same dark design; the error screen never shows the error's message.
 - **Dashboard** (`/dashboard`). One library request drives the Library Health banner and the library list below it. The banner's three stat cards are toggle buttons (`aria-pressed`) that choose the list: **Games owned** lists every game A to Z, **Lifetime hours** lists every game by playtime (most first), and **Unplayed backlog** (the default) lists games with exactly 0 minutes played, A to Z. The list heading and count follow the selection and are announced politely to screen readers. Lists show 24 games at a time with a "Show more" button. In backlog mode the list is the Backlog Guardian deck of cards; each card looks up its store price only when it scrolls into view, so each 24-card page costs at most 24 Storefront lookups, each shared by all users for 24 hours. The card's value rating divides the current US store price by a game length that is **simulated** from the AppID and labelled as such in the UI; there is no real length data source yet. After a stale answer the client re-checks at most twice, 4 seconds apart, then stops.
 - **Deals** (`/deals`). A dense, SteamDB-style table. One request to `GET /api/deals` returns every discounted game among Steam's global top 1,000 sellers, and the browser filters, sorts and pages them with no further requests.
   - **Expandable rows (v1.6, refined v1.7).** Clicking a row, or the game's title text (the title itself is the button, with `aria-expanded`; there is no arrow icon), opens a detail card directly under that row. The card starts with the game's header image. Below it (v1.7.2), "About this game" and "Price breakdown" sit side by side, and the price history chart gets its own full-width row underneath. Its facts show Genres and at most 3 tags; the Features list is left out here. One card is open at a time; Escape or "Close" folds it. Nothing in the table navigates away: the card's "View on Steam" button opens the store page in a new tab. The card holds the full price history chart, a price breakdown (Steam all-time low, all-time / 1-year / 3-month low at any store, and the current price at every store ITAD tracks, cheapest first), and the game facts below. Its data loads only when opened and is cached. Inside the horizontally scrolling table the card is `position: sticky` and sized to the frame's visible width (measured with a ResizeObserver), so on phones it stays readable while the table scrolls.
@@ -152,6 +153,20 @@ Three Web API services added in v1.3–v1.4 need no key and no Storefront budget
   - Deals: next to "Sort by". The title is part of the filter state, counts as an active filter, and "Reset filters" clears it.
   - Dashboard: above the list for the chosen stat card. The text is kept when switching cards, and each game keeps its playtime rank.
   - Wishlist: replaces the old "add by AppID or link" form. Typing a title filters the list. A pasted Steam store link or App ID shows that game if it is on the list, and otherwise offers "Watch app N", which does what the old form did. When the SteamGauge watchlist is full, a notice says so.
+- **Performance (v1.9).** Measured in Chrome with 50 Deals rows, 300-point price histories and the drawer's data already cached:
+
+  | | Drawer on screen | Fully filled | Longest frame |
+  |---|---|---|---|
+  | v1.8, normal CPU | 72 ms | 72 ms | 56 ms |
+  | v1.9, normal CPU | 9 ms | 43 ms | 17 ms |
+  | v1.8, 4× slower CPU | 374 ms | 374 ms | 300 ms |
+  | v1.9, 4× slower CPU | 53 ms | 117 ms | 50 ms |
+
+  - **Hover prefetch (Deals).** When the mouse rests on a row for 120 ms, or a row's button gets keyboard focus, the drawer's two requests (full-mode insights and price history) start, and its header image is warmed in the browser's cache. Touch and pen never prefetch (a tap is the click). One set of handlers on the `<tbody>` finds the row from `data-prefetch-appid`, so rows need no handlers. It is skipped when the data is cached and fresh or already loading, when the browser sends Save-Data, and when 3 rows are already prefetching. The queries are defined once in `components/game-queries.ts`, so the prefetch fills exactly the entry the drawer reads; opening a row whose prefetch is still running shares that request.
+  - **Prefetches are cheap guesses.** They carry the `x-steamgauge-prefetch: 1` header. The server answers them from a lower quota tier (section 5.5), limits them to 120 per user per minute, and returns 503 `prefetch_declined` instead of degraded data. The history route never falls back to the Storefront for one. A declined prefetch caches nothing in the browser. If the drawer opened while it ran, the browser repeats the request as a normal load.
+  - **One-frame drawer.** Opening re-renders only the two rows involved: rows are memoised, the toggle callback is stable, and the sale-end clock ticks once a minute instead of changing on every render. The first render of the drawer is its shell (image, title, price, buttons, all from the row) with skeletons the size of the panels. The facts, store prices and chart follow in a deferred render (`useDeferredValue(true, false)`), which React can interrupt; on a fast machine they often land in the same frame. The history request starts with the shell, not when its panel mounts.
+  - **Chart cost.** Most of the old 72 ms was the price chart's collapsed "Show price changes as a table", which formatted every price change on every open, and new `Intl` formatter objects created per call. The table's rows are now built only when it is opened, and `formatMoney`/`formatDay` reuse one formatter per format with identical output. The chart's share of an open fell from about 50 ms to under 1 ms.
+  - **Wishlist cards** have no drawer, and each card already loads when it nears the screen, so a hover handler would add nothing. Instead cards start loading 800 px ahead (was 120 px), so the next card is usually ready when it scrolls in.
 - **Degraded states are first-class UI.** Every data view handles: fresh, stale (shows "updated 3h ago"), private profile, and upstream unavailable.
 
 ### 4.2 API layer (BFF)
@@ -192,6 +207,14 @@ Notes on the search and wishlist routes:
   - If Steam fails, catalog results are returned with `steamAvailable: false`. The request fails only when both sources fail.
   - Fuse.js was not used: it needs the whole title list in memory, while Steam's index and Postgres trigrams search the full catalog without shipping it anywhere. Title similarity is a small, tested Dice-coefficient scorer (`fuzzyScore` in `lib/title-search.ts`).
   - The route requires a session, rejects `q` longer than 100 characters (400), and allows 60 searches a minute per user (429, `Retry-After: 30`). The limit's bucket key is `user:<first 24 hex of sha256(steamid)>:search`, so `rate_buckets` never holds a SteamID. Responses carry `Cache-Control: private, max-age=300`.
+- **Per-game routes: caching and prefetch (v1.9, `lib/api/game-cache.ts`).** `GET /api/apps/[appid]/insights` and `GET /api/wishlist/[appid]/history` return the same data to every user, so a complete answer is sent with a shared `Cache-Control` the CDN may use:
+  - History: `public, s-maxage=3600, stale-while-revalidate=86400`.
+  - Insights: `public, s-maxage=600, stale-while-revalidate=3600`, shorter because it carries the live player count (10 minutes) and every store's price (1 hour).
+  - An answer our own cache marked stale: `public, s-maxage=60, stale-while-revalidate=600`. An answer with an `unavailable` section: `private, no-store`, never shared.
+  - `GET /api/apps/[appid]` already used `public, s-maxage=3600, stale-while-revalidate=86400`.
+  - `/api/deals` and `/api/wishlist` stay `private, no-store`: they carry owned, wished and watched flags, and a shared cache would show one user's list to another.
+  - Consequence: the CDN can serve a cached per-game answer without running the route, so its session check does not apply to cache hits. The data is public Steam and ITAD data; the check still guards every request that reaches the function and spends quota.
+  - Requests with `x-steamgauge-prefetch: 1` are hover prefetches (section 4.1): lower quota tier, 120 per user per minute (`user:<hash>:prefetch`), and 503 `prefetch_declined` instead of degraded data or a Storefront fallback.
 - **Wishlist** routes are always scoped to the SteamID in the verified session. There is no SteamID in the URL or body, so one user cannot read or change another's list.
   - `GET` returns the Steam wishlist merged with the watchlist (section 4.1), with `steamStatus` (`ok`, `empty_or_private`, `unavailable`) and `lowsAvailable`. If Steam cannot be reached the watchlist is still returned. A price that cannot be loaded marks only that item `unavailable`.
   - `POST` takes `{ appid, note? }`. It refuses a 51st app (409 `wishlist_full`), loads the app's details (404 `app_not_found` if Steam has no such app), ensures the `steam_apps` row, then upserts the `tracked_apps` row. Repeating the call is safe; the note changes only if one is sent.
@@ -221,7 +244,8 @@ Implemented so far: the two auth routes, `GET /api/players/[steamid]/games`, `GE
 ```
 app/
   page.tsx                  # landing: sign-in screen; redirects signed-in visitors to /dashboard (implemented)
-  (app)/layout.tsx          # shell for signed-in pages: surface, navigation, shared query client (implemented)
+  layout.tsx                # root: <html>/<body>, global CSS, <Providers> around everything (implemented)
+  (app)/layout.tsx          # shell for signed-in pages: surface, navigation (implemented)
   (app)/loading.tsx         # dark skeleton shown while a page verifies the session (implemented)
   (app)/error.tsx           # dark error screen for anything a page throws (implemented)
   (app)/dashboard/page.tsx  # verifies the session, renders the dashboard (implemented)
@@ -235,13 +259,15 @@ components/
   global-search.tsx         # search box + autocomplete dropdown (ARIA combobox) (implemented, v1.8)
   game-view.tsx             # client view for /game/[appid] (implemented, v1.8)
   title-filter.tsx          # labelled filter box used by Deals, Dashboard and Wishlist (implemented, v1.8)
+  game-queries.ts           # per-game query definitions, hover prefetch, row intent detection (implemented, v1.9)
   dashboard-view.tsx        # client view: stat-card filter (all/playtime/backlog), library list, data age ticker (implemented)
   deals-view.tsx            # client view: filter sidebar, sortable paged deals table (implemented)
   wishlist-view.tsx         # client view: Steam wishlist + watchlist, sync status, lows, watch/remove (implemented)
   layout-width.ts           # one page width for all tabs and the nav, importable by Server Components (implemented)
   game-insights.tsx         # shared: price history panel, game facts, store price list (implemented)
   price-history-chart.tsx   # step-line price chart with 6M/1Y/2Y/All ranges, readout and table view (implemented)
-  ui-kit.tsx                # shared: query provider, data age ticker, value meter, state panels, lazy-load hook (implemented)
+  providers.tsx             # client providers: the one TanStack Query client and its defaults (implemented, v1.8.1)
+  ui-kit.tsx                # shared: data age ticker, value meter, state panels, lazy-load hook (implemented)
   api/                      # route handlers listed above
   api/cron/                 # warm + purge jobs (protected by CRON_SECRET)
 lib/
@@ -257,6 +283,7 @@ lib/
     reviews.ts              # GetAppReviews summary parser (implemented)
     insights.ts             # parsers: live players, GetItems metadata, tag list (implemented)
     search.ts               # storesearch parser + GetItems enrichment for global search (implemented, v1.8)
+    memory-cache.ts         # per-instance LRU in front of api_cache, fresh-only for reads (implemented, v1.9)
     review-backfill.ts      # bounded fill-in of missing review totals: bulk cache read + capped lookups (implemented)
   itad/client.ts            # the ONLY module that reads ITAD_API_KEY; allowlisted endpoints (implemented)
   supabase/server.ts        # server-only admin client (implemented)
@@ -264,6 +291,9 @@ lib/
   auth/session.ts           # cookie -> verified user, or null (implemented)
   api/respond.ts            # response envelope and error helpers for data routes (implemented)
   api/client.ts             # browser-side fetch for our API: envelope check, ApiError, retry rules (implemented)
+  api/game-cache.ts         # shared Cache-Control and prefetch rules for the per-game routes, server only (implemented, v1.9)
+  api/user-limit.ts         # per-user limits in rate_buckets (search, prefetch), server only (implemented, v1.9)
+  prefetch-header.ts        # the prefetch request header name, shared by browser and server (implemented, v1.9)
   deals.ts                  # assembles deal rows with owned/wished/watched flags and badges, server only (implemented)
   deals-table.ts            # pure filter/sort/paginate/badge rules and the Top deals score, shared by server and browser (implemented)
   game-insights.ts          # gathers one game's facts from cached sources, full/card modes, server only (implemented)
@@ -412,11 +442,19 @@ This costs no Steam calls beyond the `appdetails` fetch the page already needs, 
 | Layer | Where | Holds | Lifetime | Purpose |
 |---|---|---|---|---|
 | L0 | Browser (TanStack Query) | Everything the user has viewed | Minutes, per session | Zero-network navigation and dedupe |
-| L1 | CDN (`Cache-Control`) | Public app data only (store details, schemas, news) | `s-maxage` + `stale-while-revalidate` | Requests never reach a function |
+| L1 | CDN (`Cache-Control`) | Public app data only: store details, schemas, news, and since v1.9 complete game facts and price histories | `s-maxage` + `stale-while-revalidate` | Requests never reach a function |
+| L1.5 | Function memory (`lib/steam/memory-cache.ts`, v1.9) | Entries this instance read or wrote recently, at most 24 MB of JSON | Until the entry's `fresh_until` | Saves a warm instance the database round trip |
 | L2 | Supabase `api_cache` | All normalized Steam responses | Per-resource TTL | Shared across all users and all function instances |
 | L3 | Steam | Source of truth | n/a | Only on a true miss or expired entry |
 
-L2 is the important one. Serverless instances share no memory, so an in-process cache would be nearly useless. Postgres is the one place every instance can see.
+L2 is the important one. Serverless instances share no memory, so an in-process cache cannot replace it. Postgres is the one place every instance can see.
+
+L1.5 (v1.9) is only a shortcut in front of it, with rules that keep instances consistent:
+- `cachedFetch` serves a memory entry only while it is fresh. A stale entry goes to Postgres, where the lease decides who refreshes it, so no instance keeps serving data another has already replaced. (An instance only refreshes a row that Postgres shows as stale, so a fresh memory entry is never out of date.)
+- `peekCached` may use fresh or stale entries, as it does from Postgres.
+- Lease placeholders are never stored. Entries are held as JSON text and parsed on every hit, so requests never share a mutable object.
+- The session check for player data runs before any cache layer.
+- A future "delete my data" must also call `forgetMemoryCache` for the user's keys.
 
 User-scoped responses are sent with `Cache-Control: private, no-store` so the CDN never stores one user's data for another.
 
@@ -476,6 +514,7 @@ Implementation details (`lib/steam/cached-fetch.ts`):
 | Steam tag names | `store:tags:english` | 7 d | 30 d | One entry for every user and game |
 | One game's prices at every store (ITAD), with store links | `app:{appid}:itad-prices:v2:{cc}` | 1 h | 24 h | Global; expanded Deals rows only |
 | Global search results (Steam storesearch + GetItems) | `search:{cc}:{normalised term}` | 24 h | 7 d | Global; one Storefront call per query per day serves every user (v1.8) |
+| Steam AppID → ITAD game id | `app:{appid}:itad-id` | 30 d | 90 d | Global; ids never change. Written in bulk by every Deals and Wishlist refresh, so an expanded row's prices and history skip the lookup call (v1.9) |
 | Private profile / not found | same key, `status = 'private'` | 30 min | 30 min | Negative caching stops retry storms |
 
 TTLs live in one file (`lib/steam/ttl.ts`) so they can be tuned from observed usage. The signed-in user gets a manual "Refresh" button for their own profile, limited to one forced refresh per resource per 2 minutes.
@@ -505,18 +544,23 @@ Budgets (fixed windows):
 |---|---|---|---|
 | `webapi` | 1 day (resets 00:00 Pacific, matching Valve's day) | 80,000 | Tiered by request priority, see below |
 | `webapi` | 1 minute | 120 | Smooths bursts |
-| `store` | 5 minutes | 150 | None |
-| `itad` | 5 minutes | 600 (interactive), 450 (background) | Composite refreshes are charged per ITAD call, before every attempt |
+| `store` | 5 minutes | 150; 90 for hover prefetches (v1.9) | Prefetches stop at 60% so they cannot use up the shared Storefront budget |
+| `itad` | 5 minutes | 600 (interactive), 450 (background and prefetch) | Composite refreshes are charged per ITAD call, before every attempt |
 
 Daily tiers. Each tier is the ceiling passed to `take_quota` for the same `webapi` day bucket, so lower-priority work is cut off first:
 
 | Request priority | May call Steam while today's usage is under |
 |---|---|
 | Cron warming, background (stale-while-revalidate) refresh | 56,000 (70%) |
+| Hover prefetch (`priority: "prefetch"`, v1.9) | 56,000 (70%) |
 | Cache miss, anonymous request | 72,000 (90%) |
 | Cache miss, signed-in user | 80,000 (100%) |
 
 At 80,000 no Steam Web API calls are made and the app runs entirely from cache until the window resets.
+
+**Prefetch refusals release their lease (v1.9).** A failed refresh normally keeps its 15-second lease, so other requests wait instead of repeating a failed call. When a prefetch is refused by its lower ceiling, no upstream call was made and a click has more budget, so the lease is released at once. Without this, a declined hover made the click on the same row wait out the lease and show "unavailable" (found by the v1.9 tests).
+
+**Parallel where the data allows (v1.9).** Independent upstream calls inside one refresh run together: the Wishlist refresh now asks `GetItems` and ITAD prices at the same time (it used to wait for `GetItems`), and insights already ran its five sources with `Promise.allSettled`. ITAD's lookup (Steam AppID → ITAD id) must finish before prices or history can be asked, so those cannot run in parallel. The id is cached instead (section 5.3), which removes the lookup from an expanded row's path entirely.
 
 **Enforcement in code.** `lib/steam/client.ts` will not open a connection until the caller's `acquire` callback returns true, and it calls `acquire` again before every retry. The cache pipeline implements `acquire` with `take_quota` plus the breaker check, so no code path reaches Steam without being charged.
 
@@ -665,7 +709,7 @@ We never see or handle a Steam password. Signing in proves SteamID ownership onl
 
 - **Input validation with zod on every parameter:** SteamID `^7656119\d{10}$`, AppID integer 1–9,999,999, vanity name `^[A-Za-z0-9_-]{2,32}$`, country code from a fixed list, search term 2–64 characters after normalising (global search; the catalog function needs 3), tracked-app note at most 500 characters. Invalid input returns 400 before any cache or Steam access.
 - **No SSRF surface.** Upstream hosts are hard-coded constants. No request value ever becomes part of a hostname or path segment without validation; `redirect: "error"` on upstream fetches.
-- **Inbound rate limiting** (rows in `rate_buckets`, checked with `take_quota`): 60 requests/minute per session, 30/minute per IP for unauthenticated endpoints, 10/minute per IP on auth endpoints. Global search has its own limit of 60 per minute per user (v1.8), keyed by a SteamID hash.
+- **Inbound rate limiting** (rows in `rate_buckets`, checked with `take_quota`): 60 requests/minute per session, 30/minute per IP for unauthenticated endpoints, 10/minute per IP on auth endpoints. Global search has its own limit of 60 per minute per user (v1.8), keyed by a SteamID hash. Hover prefetches are limited to 120 per minute per user (v1.9) the same way (`lib/api/user-limit.ts`).
 - **Authentication required** for all player endpoints, so anonymous traffic cannot spend our quota looking up arbitrary SteamIDs.
 - **Upstream timeouts** of 5 seconds via `AbortController`; responses are schema-validated before caching so malformed upstream data cannot poison the cache.
 - **CSRF.** All state-changing endpoints are `POST`/`DELETE`, check the `Origin` header against our own origin, and rely on `SameSite=Lax`.
@@ -741,6 +785,10 @@ Permissions-Policy: camera=(), microphone=(), geolocation=()
 | ADR-21 | Wishlist cards fetch Storefront `appdetails` (for genres) lazily, per card in view, cached 24 h for everyone (revised v1.7.1) | Cache-only reads (v1.6), which left Genres empty on most cards | `appdetails` is Steam's only source of genre names. The 24-hour shared cache, lazy loading and the Storefront quota gate bound the cost; developer, publisher and tags still come from the Web API |
 | ADR-22 | Global search asks Steam's store search and our `pg_trgm` catalog in parallel and ranks them with a small tested scorer (v1.8) | Fuse.js over a title list; the catalog alone; `IStoreQueryService` text search | Fuse.js would need the whole title list in the browser or in memory. The catalog alone starts empty on a new deployment. Steam's store search knows every title, and the trigram catalog covers the typos it misses |
 | ADR-23 | The Wishlist filter box also accepts a Steam link or App ID and offers "Watch" when that game is not on the list (v1.8) | Keep a separate add-by-ID form; only filter | One box keeps the toolbar short on phones and keeps the old way to add a game. Finding a game by name now goes through global search and its game page |
+| ADR-24 | Per-instance memory cache in front of Postgres, serving fresh entries only (v1.9) | No in-process cache; serve stale from memory too | Saves the database round trip on warm instances without letting instances disagree: freshness is decided by Postgres and leases as before |
+| ADR-25 | Complete per-game answers (insights, history) are CDN-cacheable; personal lists stay private (v1.9) | `s-maxage` on every route, as first requested | Deals and Wishlist responses contain owned, wished and watched flags; sharing them would leak one user's list to others. Per-game data is public, so sharing it is safe even though cache hits skip the session check |
+| ADR-26 | Hover prefetch uses its own lower quota tier and is declined rather than answered with degraded data (v1.9) | Prefetch as a normal request | A mouse sweep must not use up the shared Storefront budget, and a refused guess must not fill the browser cache with a half-empty answer that a click would then show |
+| ADR-27 | Cache Steam AppID → ITAD ids instead of trying to parallelise lookup and prices (v1.9) | `Promise.all` over lookup, prices and history | Prices and history need the id, so they cannot start before the lookup. Recording ids from the bulk Deals/Wishlist lookups removes the call from the drawer's path for nearly every row |
 | ADR-20 | The deals pool comes from Steam (discounted apps among the global top 1,000 sellers); ITAD only enriches by Steam AppID | ITAD's deals list as the pool, with a reverse lookup to AppIDs | The ITAD-driven pool was dominated by obscure titles and missed major sales. Steam's own query defines "on sale" exactly as the store does |
 
 ---
@@ -767,6 +815,8 @@ Permissions-Policy: camera=(), microphone=(), geolocation=()
 | ITAD deal `url` (store link) written from the documented deal object without a live response | A store row without a link | Rows without a valid https link are shown unlinked; verify before launch |
 | `GetItems` `basic_info.developers / publishers / franchises` and `tags` field names, and `GetTagList`, written without a live response | A missing section on the facts panel | Each is optional; developer and publisher fall back to `appdetails`; verify before launch |
 | A private Steam wishlist looks the same as an empty one | User sees "empty or private" when theirs is just private | UI explains the Game details privacy setting and links to it |
+| Next.js or the host changes how a Route Handler's own `Cache-Control` is treated | Per-game answers stop being shared by the CDN (slower, not wrong) | Check the response headers on a deployed preview; the in-memory and Postgres caches still apply |
+| Hover prefetch raises request volume | More function invocations and database reads per visit | 120 ms intent delay, no touch prefetch, skip when cached or loading, 3 in flight, 120 per user per minute, lower quota tier |
 | Quota bug (for example a refresh loop) | Budget burned | Governor is enforced in the database, not in app code; per-minute ceiling limits damage |
 
 Open questions for the team:

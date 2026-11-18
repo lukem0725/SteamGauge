@@ -25,6 +25,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import {
   Fragment,
+  memo,
+  useCallback,
+  useDeferredValue,
   useEffect,
   useId,
   useMemo,
@@ -42,6 +45,7 @@ import {
   StorePriceList,
   useGameInsights,
 } from "@/components/game-insights";
+import { historyQuery, prefetchGame, useRowPrefetchIntent } from "@/components/game-queries";
 
 import {
   DataAgeTicker,
@@ -835,10 +839,31 @@ function DealsTable({
   onSort: (key: SortKey) => void;
   steamid: string;
 }) {
-  const now = Date.now();
+  // One clock for every row, ticking once a minute (sale end times), so a
+  // re-render does not hand every row a new `now` and defeat memo().
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const [expanded, setExpanded] = useState<number | null>(null);
+  // Stable, so opening one row re-renders only that row and the one closing.
+  const toggle = useCallback((appid: number) => {
+    setExpanded((current) => (current === appid ? null : appid));
+  }, []);
+  const close = useCallback(() => setExpanded(null), []);
+
   const frame = useRef<HTMLDivElement>(null);
   const frameWidth = useElementWidth(frame);
+
+  // Hover or keyboard focus on a row loads its drawer data before the click
+  // (components/game-queries.ts).
+  const queryClient = useQueryClient();
+  const rowsById = useMemo(() => new Map(rows.map((row) => [row.appid, row])), [rows]);
+  const intent = useRowPrefetchIntent((appid) => {
+    prefetchGame(queryClient, appid, { headerImage: rowsById.get(appid)?.headerImage ?? null });
+  });
   return (
     // `relative` makes this frame the containing block for the visually hidden
     // text in the rows, so it scrolls with the table instead of widening the
@@ -886,22 +911,20 @@ function DealsTable({
             })}
           </tr>
         </thead>
-        <tbody>
+        <tbody
+          onPointerOver={intent.onPointerOver}
+          onPointerLeave={intent.onPointerLeave}
+          onFocus={intent.onFocus}
+        >
           {rows.map((row) => {
             const open = expanded === row.appid;
             return (
               <Fragment key={row.appid}>
-                <DealTableRow
-                  row={row}
-                  steamid={steamid}
-                  now={now}
-                  open={open}
-                  onToggle={() => setExpanded(open ? null : row.appid)}
-                />
+                <DealTableRow row={row} steamid={steamid} now={now} open={open} onToggle={toggle} />
                 {open ? (
                   <tr id={`deal-${row.appid}-details`} className="border-b border-slate-800/70">
                     <td colSpan={COLUMNS.length} className="p-0">
-                      <DealDetails row={row} width={frameWidth} onClose={() => setExpanded(null)} />
+                      <DealDetails row={row} width={frameWidth} onClose={close} />
                     </td>
                   </tr>
                 ) : null}
@@ -917,7 +940,13 @@ function DealsTable({
 /** Keeps a click on a control from also toggling the row. */
 const stopRowToggle = (event: MouseEvent) => event.stopPropagation();
 
-function DealTableRow({
+/**
+ * One table row. Memoised: its props only change for the row being opened or
+ * closed (and once a minute for the clock), so a toggle re-renders two rows,
+ * not the whole page. `data-prefetch-appid` lets the table's hover handler
+ * find the row without a handler per row.
+ */
+const DealTableRow = memo(function DealTableRow({
   row,
   steamid,
   now,
@@ -928,11 +957,12 @@ function DealTableRow({
   steamid: string;
   now: number;
   open: boolean;
-  onToggle: () => void;
+  onToggle: (appid: number) => void;
 }) {
   return (
     <tr
-      onClick={onToggle}
+      data-prefetch-appid={row.appid}
+      onClick={() => onToggle(row.appid)}
       className={`cursor-pointer border-b border-slate-800/70 last:border-0 hover:bg-slate-900/60 ${
         open ? "bg-slate-900/70" : ""
       }`}
@@ -960,7 +990,7 @@ function DealTableRow({
               aria-controls={`deal-${row.appid}-details`}
               onClick={(event: MouseEvent) => {
                 event.stopPropagation();
-                onToggle();
+                onToggle(row.appid);
               }}
               className={`line-clamp-3 max-w-full break-words rounded text-left font-medium leading-snug underline-offset-4 hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400 ${
                 open ? "text-steam-300 decoration-steam-400/60" : "text-slate-100 decoration-slate-500"
@@ -1027,9 +1057,18 @@ function DealTableRow({
       </td>
     </tr>
   );
-}
+});
 
-/** The expanded card under a row. Loads its data only when opened. */
+/**
+ * The expanded card under a row.
+ *
+ * Opens in one frame (v1.9): the first render is only the card's shell
+ * (image, title, price, buttons, all from the row already on screen) with
+ * skeletons. The facts, store prices and the history chart (the expensive
+ * part, years of price points) render right after that frame is painted, in
+ * a deferred render React can interrupt. Both requests start immediately; if
+ * the row was hovered first, their answers are usually already cached.
+ */
 function DealDetails({
   row,
   width,
@@ -1042,6 +1081,15 @@ function DealDetails({
 }) {
   const insights = useGameInsights(row.appid, "full", true);
   const data = insights.data?.status === "ok" ? insights.data.data : null;
+
+  // false on the opening render, true in the deferred render that follows.
+  const showPanels = useDeferredValue(true, false);
+
+  // Start the history request now rather than when its panel mounts.
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    void queryClient.prefetchQuery(historyQuery(row.appid));
+  }, [queryClient, row.appid]);
   return (
     <div
       // Sticky inside the horizontally scrolling table: the card stays in
@@ -1061,7 +1109,9 @@ function DealDetails({
             alt=""
             width={460}
             height={215}
-            loading="lazy"
+            // Visible as soon as the card opens, and usually already in the
+            // image cache from the hover prefetch.
+            loading="eager"
             decoding="async"
             className="aspect-[460/215] w-full shrink-0 rounded-xl bg-slate-900 object-cover sm:w-56 lg:w-64"
           />
@@ -1096,24 +1146,55 @@ function DealDetails({
 
       {/* Top row: facts and price breakdown side by side. Bottom row: the
           price history chart, full width so years of history have room. */}
+      {showPanels ? (
+        <>
+          <div className="mt-5 grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div className="min-w-0">
+              <GameFactsPanel appid={row.appid} mode="full" insights={insights} maxTags={3} showFeatures={false} />
+            </div>
+            <div className="min-w-0">
+              {insights.isPending ? (
+                <div aria-busy="true" aria-label="Loading store prices" className="h-24 animate-pulse rounded-lg bg-slate-800/60" />
+              ) : (
+                <StorePriceList
+                  data={data?.prices ?? null}
+                  steamPrice={row.price}
+                  unavailable={!data || data.unavailable.includes("prices")}
+                />
+              )}
+            </div>
+          </div>
+          <div className="mt-6 border-t border-slate-800 pt-4">
+            <PriceHistoryPanel appid={row.appid} eager />
+          </div>
+        </>
+      ) : (
+        <DrawerSkeleton />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The drawer's first frame: placeholders the same size as the panels, so
+ * nothing jumps when they fill in.
+ */
+function DrawerSkeleton() {
+  return (
+    <div aria-busy="true" aria-label="Loading game details">
       <div className="mt-5 grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div className="min-w-0">
-          <GameFactsPanel appid={row.appid} mode="full" insights={insights} maxTags={3} showFeatures={false} />
+        <div className="space-y-2">
+          <div className="h-3 w-28 animate-pulse rounded bg-slate-800" />
+          <div className="h-4 w-40 animate-pulse rounded bg-slate-800" />
+          <div className="h-4 w-64 animate-pulse rounded bg-slate-800" />
+          <div className="h-6 w-full animate-pulse rounded bg-slate-800/60" />
         </div>
-        <div className="min-w-0">
-          {insights.isPending ? (
-            <div aria-busy="true" aria-label="Loading store prices" className="h-24 animate-pulse rounded-lg bg-slate-800/60" />
-          ) : (
-            <StorePriceList
-              data={data?.prices ?? null}
-              steamPrice={row.price}
-              unavailable={!data || data.unavailable.includes("prices")}
-            />
-          )}
-        </div>
+        <div className="h-24 animate-pulse rounded-lg bg-slate-800/60" />
       </div>
       <div className="mt-6 border-t border-slate-800 pt-4">
-        <PriceHistoryPanel appid={row.appid} eager />
+        <div className="h-3 w-24 animate-pulse rounded bg-slate-800" />
+        <div className="mt-3 h-4 w-48 animate-pulse rounded bg-slate-800" />
+        <div className="mt-3 h-28 animate-pulse rounded-md bg-slate-800/60" />
       </div>
     </div>
   );

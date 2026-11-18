@@ -17,7 +17,15 @@
  */
 import { after, type NextRequest, type NextResponse } from "next/server";
 
+import {
+  INSIGHTS_CDN,
+  NO_SHARED_CACHE,
+  PREFETCH_PER_MINUTE,
+  isPrefetch,
+  sharedCacheControl,
+} from "@/lib/api/game-cache";
 import { errorResponse, failureResponse, resultResponse } from "@/lib/api/respond";
+import { takeUserQuota } from "@/lib/api/user-limit";
 import { getSessionUser } from "@/lib/auth/session";
 import { SESSION_COOKIE } from "@/lib/auth/shared";
 import { buildGameInsights } from "@/lib/game-insights";
@@ -40,12 +48,26 @@ export async function GET(
     const modeParam = request.nextUrl.searchParams.get("mode") ?? "full";
     if (modeParam !== "full" && modeParam !== "card") return errorResponse("invalid_mode", 400);
 
+    // Hover prefetch (lib/api/game-cache.ts): limited per user, lower quota
+    // tier, and refused rather than answered with degraded data.
+    const prefetch = isPrefetch(request);
+    if (prefetch && !(await takeUserQuota(session.steamid, "prefetch", PREFETCH_PER_MINUTE))) {
+      return errorResponse("prefetch_declined", 503);
+    }
+
     const result = await buildGameInsights(appid.data, modeParam, {
       session,
       waitUntil: (work) => after(() => work),
+      priority: prefetch ? "prefetch" : "interactive",
     });
-    return resultResponse(result, "private, max-age=60");
+
+    const complete = result.status === "ok" && result.data.unavailable.length === 0;
+    if (prefetch && !complete) return errorResponse("prefetch_declined", 503);
+
+    // Same for every user: a complete answer may be shared by the CDN.
+    return resultResponse(result, complete ? sharedCacheControl(result.meta, INSIGHTS_CDN) : NO_SHARED_CACHE);
   } catch (err) {
+    if (isPrefetch(request)) return errorResponse("prefetch_declined", 503);
     return failureResponse(err);
   }
 }

@@ -17,7 +17,7 @@
  * the tooltip are HTML positioned by percentage, so nothing is distorted and
  * no resize listener is needed.
  */
-import { useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useState, type KeyboardEvent, type PointerEvent, type SyntheticEvent } from "react";
 
 import { formatMoney } from "@/components/ui-kit";
 import type { PriceHistory, PricePoint } from "@/lib/price-history";
@@ -57,6 +57,7 @@ export interface PriceHistoryChartProps {
 export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryChartProps) {
   const [active, setActive] = useState<number | null>(null);
   const [rangeId, setRangeId] = useState<RangeId>("all");
+  const [tableOpen, setTableOpen] = useState(false);
 
   const currency = history.currency ?? "USD";
   const today = startOfUtcDay(now.getTime());
@@ -317,8 +318,13 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
         </span>
       </div>
 
-      {/* Table view: every value in the chart, without hovering. */}
-      <details className="mt-2 text-xs text-slate-400">
+      {/* Table view: every value in the chart, without hovering. Its rows are
+          built only once it is opened: a closed <details> shows nothing, and
+          a few hundred formatted rows made every chart slow to appear. */}
+      <details
+        className="mt-2 text-xs text-slate-400"
+        onToggle={(event: SyntheticEvent<HTMLDetailsElement>) => setTableOpen(event.currentTarget.open)}
+      >
         <summary className="inline-flex min-h-11 cursor-pointer items-center rounded-md text-slate-500 hover:text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400">
           Show price changes as a table
         </summary>
@@ -338,7 +344,7 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
             </tr>
           </thead>
           <tbody>
-            {priceChanges(points).map((p) => (
+            {(tableOpen ? priceChanges(points) : []).map((p) => (
               <tr key={p.date} className="border-b border-slate-800/60">
                 <td className="py-1.5 pr-3">{formatDay(p.date, now)}</td>
                 <td className="py-1.5 pr-3 text-slate-200">{formatMoney(p.final, currency)}</td>
@@ -399,15 +405,21 @@ function priceChanges(points: readonly PricePoint[]): PricePoint[] {
 }
 
 /** "Oct 12", or "Oct 12, 2025" when the year differs from the current one. */
+// Built once: creating an Intl formatter per call cost ~50 ms per opened chart
+// with a few hundred price changes (v1.9). Output is identical to
+// toLocaleDateString with the same options.
+const DAY_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+const DAY_YEAR_FORMAT = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
 export function formatDay(day: string, now: Date = new Date()): string {
   const date = new Date(toMs(day));
   if (Number.isNaN(date.getTime())) return day;
-  return date.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-    ...(date.getUTCFullYear() !== now.getUTCFullYear() ? { year: "numeric" } : {}),
-  });
+  return (date.getUTCFullYear() !== now.getUTCFullYear() ? DAY_YEAR_FORMAT : DAY_FORMAT).format(date);
 }
 
 /**

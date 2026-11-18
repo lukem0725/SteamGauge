@@ -22,8 +22,8 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { PriceHistoryChart, formatDay } from "@/components/price-history-chart";
+import { historyQuery, insightsQuery } from "@/components/game-queries";
 import { formatMoney, useInViewOnce } from "@/components/ui-kit";
-import { apiGet } from "@/lib/api/client";
 import type { GameInsights, InsightsMode } from "@/lib/game-insights";
 import type { PriceHistory } from "@/lib/price-history";
 
@@ -34,17 +34,17 @@ const DAYS_NEEDED_FOR_LOW = 7;
 // Data
 // =============================================================================
 
+/** The query is defined once in components/game-queries.ts, shared with prefetch. */
 export function useGameInsights(appid: number, mode: InsightsMode, enabled: boolean) {
-  return useQuery({
-    queryKey: ["app", "insights", appid, mode],
-    queryFn: ({ signal }) =>
-      apiGet<GameInsights>(`/api/apps/${appid}/insights?mode=${mode}`, signal),
-    enabled,
-    // Player counts refresh on the server every 10 minutes; nothing else is faster.
-    staleTime: 5 * 60_000,
-    retry: false,
-  });
+  return useQuery({ ...insightsQuery(appid, mode), enabled });
 }
+
+/**
+ * How far ahead of the screen a panel starts loading. Wishlist cards pass a
+ * larger margin so the next cards are ready before they scroll into view.
+ */
+export const DEFAULT_PRELOAD_MARGIN = "120px";
+export const WISHLIST_PRELOAD_MARGIN = "800px 0px";
 
 // =============================================================================
 // Price history
@@ -54,17 +54,20 @@ export function useGameInsights(appid: number, mode: InsightsMode, enabled: bool
  * @param eager  Load at once (an expanded row the user just opened). Otherwise
  *               it loads when it scrolls into view.
  */
-export function PriceHistoryPanel({ appid, eager = false }: { appid: number; eager?: boolean }) {
-  const [ref, inView] = useInViewOnce<HTMLDivElement>();
+export function PriceHistoryPanel({
+  appid,
+  eager = false,
+  preloadMargin = DEFAULT_PRELOAD_MARGIN,
+}: {
+  appid: number;
+  eager?: boolean;
+  /** IntersectionObserver rootMargin for lazy loading. */
+  preloadMargin?: string;
+}) {
+  const [ref, inView] = useInViewOnce<HTMLDivElement>(preloadMargin);
   const enabled = eager || inView;
 
-  const history = useQuery({
-    queryKey: ["wishlist", "history", appid],
-    queryFn: ({ signal }) => apiGet<PriceHistory>(`/api/wishlist/${appid}/history`, signal),
-    enabled,
-    staleTime: 10 * 60_000,
-    retry: false,
-  });
+  const history = useQuery({ ...historyQuery(appid), enabled });
 
   const data = history.data?.status === "ok" ? history.data.data : null;
 
@@ -174,6 +177,7 @@ export function GameFactsPanel({
   maxTags,
   maxFeatures,
   showFeatures = true,
+  preloadMargin = DEFAULT_PRELOAD_MARGIN,
 }: {
   appid: number;
   mode: InsightsMode;
@@ -186,8 +190,10 @@ export function GameFactsPanel({
   maxFeatures?: number;
   /** Show Steam's descriptors ("Single-player", ...). Default true. */
   showFeatures?: boolean;
+  /** IntersectionObserver rootMargin for lazy loading. */
+  preloadMargin?: string;
 }) {
-  const [ref, inView] = useInViewOnce<HTMLDivElement>();
+  const [ref, inView] = useInViewOnce<HTMLDivElement>(preloadMargin);
   const own = useGameInsights(appid, mode, !insights && (eager || inView));
   const query = insights ?? own;
   const data = query.data?.status === "ok" ? query.data.data : null;

@@ -16,7 +16,14 @@
  */
 import { after, type NextRequest, type NextResponse } from "next/server";
 
+import {
+  HISTORY_CDN,
+  PREFETCH_PER_MINUTE,
+  isPrefetch,
+  sharedCacheControl,
+} from "@/lib/api/game-cache";
 import { errorResponse, failureResponse, resultResponse } from "@/lib/api/respond";
+import { takeUserQuota } from "@/lib/api/user-limit";
 import { getSessionUser } from "@/lib/auth/session";
 import { SESSION_COOKIE } from "@/lib/auth/shared";
 import { isItadConfigured } from "@/lib/itad/client";
@@ -38,7 +45,17 @@ export async function GET(
     const appid = appIdSchema.safeParse((await params).appid);
     if (!appid.success) return errorResponse("invalid_appid", 400);
 
-    const context = { session, waitUntil: (work: Promise<void>) => after(() => work) };
+    // Hover prefetch (lib/api/game-cache.ts): limited per user, lower quota tier.
+    const prefetch = isPrefetch(request);
+    if (prefetch && !(await takeUserQuota(session.steamid, "prefetch", PREFETCH_PER_MINUTE))) {
+      return errorResponse("prefetch_declined", 503);
+    }
+
+    const context = {
+      session,
+      waitUntil: (work: Promise<void>) => after(() => work),
+      priority: prefetch ? ("prefetch" as const) : ("interactive" as const),
+    };
 
     if (isItadConfigured()) {
       try {
@@ -51,12 +68,20 @@ export async function GET(
             itad.data.latestFinal,
             "itad",
           );
-          return resultResponse({ status: "ok", data: history, meta: itad.meta }, "private, no-store");
+          // Same for every user: shared by the CDN (lib/api/game-cache.ts).
+          return resultResponse(
+            { status: "ok", data: history, meta: itad.meta },
+            sharedCacheControl(itad.meta, HISTORY_CDN),
+          );
         }
       } catch {
         // ITAD unavailable or its budget spent: fall through to our own record.
       }
     }
+
+    // The fallback below spends Storefront budget, the tightest there is. A
+    // guess never does: the browser loads it normally if the row is opened.
+    if (prefetch) return errorResponse("prefetch_declined", 503);
 
     // The current price comes through the cache pipeline. If it was just
     // fetched from Steam, that fetch has already been added to the history.
@@ -68,8 +93,12 @@ export async function GET(
       DEFAULT_COUNTRY_CODE,
       current.data.price?.final ?? null,
     );
-    return resultResponse({ status: "ok", data: history, meta: current.meta }, "private, no-store");
+    return resultResponse(
+      { status: "ok", data: history, meta: current.meta },
+      sharedCacheControl(current.meta, HISTORY_CDN),
+    );
   } catch (err) {
+    if (isPrefetch(request)) return errorResponse("prefetch_declined", 503);
     return failureResponse(err);
   }
 }

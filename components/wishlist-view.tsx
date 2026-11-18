@@ -32,7 +32,11 @@ import {
   type ReactNode,
 } from "react";
 
-import { GameFactsPanel, PriceHistoryPanel } from "@/components/game-insights";
+import {
+  GameFactsPanel,
+  PriceHistoryPanel,
+  WISHLIST_PRELOAD_MARGIN,
+} from "@/components/game-insights";
 import {
   DataAgeTicker,
   ErrorState,
@@ -508,7 +512,12 @@ function WishlistCard({ item, queryKey }: { item: WishlistItem; queryKey: readon
           )}
         </div>
         <div className="border-b border-slate-800 px-4 py-4 sm:border-b-0 sm:px-0 sm:pb-0">
-          <GameFactsPanel appid={item.appid} mode="card" maxFeatures={5} />
+          <GameFactsPanel
+            appid={item.appid}
+            mode="card"
+            maxFeatures={5}
+            preloadMargin={WISHLIST_PRELOAD_MARGIN}
+          />
         </div>
         </div>
 
@@ -548,7 +557,7 @@ function WishlistCard({ item, queryKey }: { item: WishlistItem; queryKey: readon
 
           {item.priceStatus === "free" ? null : (
             <div className="mt-4 border-t border-slate-800 pt-3">
-              <PriceHistoryPanel appid={item.appid} />
+              <PriceHistoryPanel appid={item.appid} preloadMargin={WISHLIST_PRELOAD_MARGIN} />
             </div>
           )}
 

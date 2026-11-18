@@ -27,13 +27,18 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiGet<T>(path: string, signal: AbortSignal): Promise<CachedResult<T>> {
+export async function apiGet<T>(
+  path: string,
+  signal: AbortSignal,
+  /** Extra request headers, e.g. the prefetch marker (lib/prefetch-header.ts). */
+  extraHeaders?: Readonly<Record<string, string>>,
+): Promise<CachedResult<T>> {
   let response: Response;
   try {
     response = await fetch(path, {
       signal,
       credentials: "same-origin",
-      headers: { Accept: "application/json" },
+      headers: { ...extraHeaders, Accept: "application/json" },
     });
   } catch (err) {
     if (signal.aborted) throw err;

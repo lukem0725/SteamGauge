@@ -15,9 +15,9 @@ import { after, type NextRequest, type NextResponse } from "next/server";
 
 import { errorResponse, failureResponse, resultResponse } from "@/lib/api/respond";
 import { getSessionUser } from "@/lib/auth/session";
-import { SESSION_COOKIE, sha256Hex } from "@/lib/auth/shared";
+import { takeUserQuota } from "@/lib/api/user-limit";
+import { SESSION_COOKIE } from "@/lib/auth/shared";
 import { searchGames } from "@/lib/game-search";
-import { getSupabaseAdmin } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,20 +27,6 @@ export const SEARCH_PER_MINUTE = 60;
 /** Longest raw query accepted; anything longer is not a game title. */
 const MAX_QUERY_LENGTH = 100;
 
-async function allowSearch(steamid: string): Promise<boolean> {
-  const windowStart = new Date(Math.floor(Date.now() / 60_000) * 60_000).toISOString();
-  const { data, error } = await getSupabaseAdmin().rpc("take_quota", {
-    // Hashed: rate_buckets never holds a SteamID.
-    p_upstream: `user:${sha256Hex(steamid).slice(0, 24)}:search`,
-    p_kind: "minute",
-    p_window: windowStart,
-    p_ceiling: SEARCH_PER_MINUTE,
-    p_cost: 1,
-  });
-  if (error) throw new Error("rate limit check failed");
-  return data === true;
-}
-
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
     const session = await getSessionUser(request.cookies.get(SESSION_COOKIE)?.value);
@@ -49,7 +35,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const query = request.nextUrl.searchParams.get("q") ?? "";
     if (query.length > MAX_QUERY_LENGTH) return errorResponse("invalid_query", 400);
 
-    if (!(await allowSearch(session.steamid))) return errorResponse("rate_limited", 429, 30);
+    if (!(await takeUserQuota(session.steamid, "search", SEARCH_PER_MINUTE))) {
+      return errorResponse("rate_limited", 429, 30);
+    }
 
     const result = await searchGames(query, { session, waitUntil: (work) => after(() => work) });
     // Not personal, but per signed-in user: the browser may reuse it briefly.

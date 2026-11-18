@@ -16,6 +16,12 @@
  *   itadHistory      ITAD lookup -> ITAD price history
  *   itadAppPrices    ITAD lookup -> one game's prices at every store
  *
+ * The ITAD lookup (Steam AppID -> ITAD game id) must finish before prices or
+ * history can be asked for, so those pairs cannot run in parallel. Instead the
+ * id is cached (resource `itadId`, v1.9): the Deals and Wishlist refreshes
+ * record every id they look up in bulk, and the single-game plans read it
+ * first, so an expanded row usually needs one ITAD call instead of two.
+ *
  * Every upstream response is checked with zod here, so the cache stores only
  * data in the shapes exported below.
  */
@@ -333,6 +339,27 @@ export interface ItadAppPrices {
 }
 
 const itadIdsBySteamIdSchema = z.record(z.string(), z.string().uuid().nullable());
+
+/**
+ * One app's ITAD game id: from the id cache when known, else one lookup call
+ * (whose answer is then cached). Null when ITAD does not know the app.
+ */
+export async function resolveItadId(io: UpstreamIO, appid: number): Promise<string | null> {
+  const known = await io.itadIds?.get(appid);
+  if (known) return known;
+  const found = itadIdsBySteamIdSchema.parse(
+    await io.itad("idsBySteamId", { body: [`app/${appid}`] }),
+  );
+  const itadId = found[`app/${appid}`] ?? null;
+  if (itadId) io.itadIds?.remember(new Map([[appid, itadId]]));
+  return itadId;
+}
+
+/** Plan for the `itadId` resource itself. */
+export async function fetchItadId(io: UpstreamIO, appid: number): Promise<Validated<{ itadId: string }>> {
+  const itadId = await resolveItadId(io, appid);
+  return itadId ? { status: "ok", data: { itadId } } : { status: "not_found" };
+}
 const itadPricesSchema = z.array(
   z.object({
     id: z.string().uuid(),
@@ -376,6 +403,8 @@ export async function fetchItadPrices(
         if (appid && itadId) idByAppid.set(appid, itadId);
       }
     });
+    // Recorded for the single-game plans (expanded rows): they skip their lookup.
+    if (idByAppid.size > 0) io.itadIds?.remember(idByAppid);
     const appidById = new Map([...idByAppid].map(([appid, id]) => [id, appid]));
     await mapWithConcurrency(chunk([...idByAppid.values()], 200), 2, async (batch) => {
       // No shop filter: every store's current price, for the comparison.
@@ -482,10 +511,7 @@ export async function fetchItadAppPrices(
   appid: number,
   countryCode: string,
 ): Promise<Validated<ItadAppPriceData>> {
-  const found = itadIdsBySteamIdSchema.parse(
-    await io.itad("idsBySteamId", { body: [`app/${appid}`] }),
-  );
-  const itadId = found[`app/${appid}`];
+  const itadId = await resolveItadId(io, appid);
   if (!itadId) return { status: "not_found" };
 
   const entries = itadAppPricesSchema.parse(
@@ -620,14 +646,18 @@ export async function fetchWishlistView(
     .filter((id) => Number.isInteger(id) && id > 0);
   const appids = [...new Set([...steam.items.map((item) => item.appid), ...local])];
 
-  const { items } = await fetchStoreItems(io, appids, countryCode);
+  // Store data and ITAD prices both need only the AppIDs, so they run at the
+  // same time (v1.9; before, ITAD waited for GetItems to finish).
+  const [{ items }, prices] = await Promise.all([
+    fetchStoreItems(io, appids, countryCode),
+    isItadConfigured() && appids.length > 0
+      ? fetchItadPrices(io, appids, countryCode)
+      : Promise.resolve(null),
+  ]);
 
   const lows: Record<string, WishlistLows> = {};
-  if (isItadConfigured() && appids.length > 0) {
-    const prices = await fetchItadPrices(io, appids, countryCode);
-    for (const [appid, found] of prices ?? []) {
-      lows[String(appid)] = { steamLow: found.steamLow, yearLowAnyStore: found.yearLowAnyStore };
-    }
+  for (const [appid, found] of prices ?? []) {
+    lows[String(appid)] = { steamLow: found.steamLow, yearLowAnyStore: found.yearLowAnyStore };
   }
 
   return {
@@ -696,10 +726,7 @@ export async function fetchItadHistory(
   appid: number,
   countryCode: string,
 ): Promise<Validated<ItadHistoryData>> {
-  const found = itadIdsBySteamIdSchema.parse(
-    await io.itad("idsBySteamId", { body: [`app/${appid}`] }),
-  );
-  const itadId = found[`app/${appid}`];
+  const itadId = await resolveItadId(io, appid);
   if (!itadId) return { status: "not_found" };
 
   const history = historyToPoints(

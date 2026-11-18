@@ -110,12 +110,20 @@ function formatAge(fetchedAtIso: string, now: number): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+/** One formatter per currency, built on first use (null: not a valid code). */
+const moneyFormats = new Map<string, Intl.NumberFormat | null>();
+
 export function formatMoney(minorUnits: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(minorUnits / 100);
-  } catch {
-    return `${(minorUnits / 100).toFixed(2)} ${currency}`;
+  let format = moneyFormats.get(currency);
+  if (format === undefined) {
+    try {
+      format = new Intl.NumberFormat("en-US", { style: "currency", currency });
+    } catch {
+      format = null;
+    }
+    moneyFormats.set(currency, format);
   }
+  return format ? format.format(minorUnits / 100) : `${(minorUnits / 100).toFixed(2)} ${currency}`;
 }
 
 export function ValueMeter({ level, bar }: { level: 0 | 1 | 2 | 3 | 4; bar: string }) {
@@ -277,8 +285,15 @@ export function describeWishlistAddError(error: unknown, limit: number | null): 
 // Lazy loading
 // =============================================================================
 
-/** True from the first time the element comes near the viewport, and stays true. */
-export function useInViewOnce<T extends Element>(): [(node: T | null) => void, boolean] {
+/**
+ * True from the first time the element comes near the viewport, and stays true.
+ *
+ * @param rootMargin  How near counts as "in view" (IntersectionObserver
+ *                    rootMargin). Fixed for the element's lifetime.
+ */
+export function useInViewOnce<T extends Element>(
+  rootMargin = "120px",
+): [(node: T | null) => void, boolean] {
   const [inView, setInView] = useState(false);
   const observer = useRef<IntersectionObserver | null>(null);
 
@@ -301,9 +316,10 @@ export function useInViewOnce<T extends Element>(): [(node: T | null) => void, b
           observer.current = null;
         }
       },
-      { rootMargin: "120px" },
+      { rootMargin },
     );
     observer.current.observe(node);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fixed per element (see @param)
   }, []);
 
   useEffect(() => () => observer.current?.disconnect(), []);
