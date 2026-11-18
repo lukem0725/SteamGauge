@@ -7,6 +7,7 @@
  * sides always agree.
  */
 import type { DealRecord } from "@/lib/steam/composites";
+import { matchesTitle } from "@/lib/title-search";
 
 // =============================================================================
 // Types
@@ -58,6 +59,12 @@ export type DealStatusFilter = "any" | "historical" | "matching" | "year";
 export type OwnedFilter = "include" | "exclude" | "only";
 
 export interface DealFilters {
+  /**
+   * Title filter typed above the table: every word must appear in the title,
+   * in any order, ignoring case, accents and punctuation (lib/title-search.ts).
+   * Client-side only; it never leaves the page.
+   */
+  readonly title: string;
   readonly status: DealStatusFilter;
   readonly owned: OwnedFilter;
   /** Only games on the Steam wishlist or the SteamGauge watchlist. */
@@ -81,6 +88,7 @@ export interface DealFilters {
 }
 
 export const DEFAULT_FILTERS: DealFilters = {
+  title: "",
   status: "any",
   owned: "include",
   wishedOnly: false,
@@ -190,7 +198,9 @@ export function filterDeals(rows: readonly DealRow[], filters: DealFilters): Dea
   const minCents = filters.priceMin !== null ? Math.round(filters.priceMin * 100) : null;
   const maxCents = filters.priceMax !== null ? Math.round(filters.priceMax * 100) : null;
 
+  const title = filters.title.trim();
   return rows.filter((row) => {
+    if (title && !matchesTitle(title, row.name)) return false;
     if (filters.gamesOnly && row.type !== "game") return false;
     if (
       filters.hideUnrated &&
@@ -226,8 +236,8 @@ export function filterDeals(rows: readonly DealRow[], filters: DealFilters): Dea
 
 /** How many filters differ from the defaults. Shown on the mobile toggle. */
 export function countActiveFilters(filters: DealFilters): number {
-  return (Object.keys(DEFAULT_FILTERS) as (keyof DealFilters)[]).filter(
-    (key) => filters[key] !== DEFAULT_FILTERS[key],
+  return (Object.keys(DEFAULT_FILTERS) as (keyof DealFilters)[]).filter((key) =>
+    key === "title" ? filters.title.trim() !== "" : filters[key] !== DEFAULT_FILTERS[key],
   ).length;
 }
 

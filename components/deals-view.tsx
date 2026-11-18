@@ -53,6 +53,7 @@ import {
   secondaryButton,
 } from "@/components/ui-kit";
 import { pageContainer } from "@/components/layout-width";
+import { TitleFilter } from "@/components/title-filter";
 import { apiGet, apiSend } from "@/lib/api/client";
 import type { SessionUser } from "@/lib/auth/session";
 import {
@@ -107,12 +108,12 @@ function Deals({ user }: DealsViewProps) {
   const payload = result?.status === "ok" ? result.data : null;
 
   return (
-    <div className="bg-zinc-950 text-zinc-100 antialiased">
+    <div className="bg-page text-slate-100 antialiased">
       <div className={pageContainer}>
         <header className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight text-zinc-50">Steam deals</h1>
-            <p className="mt-1 text-sm text-zinc-400">
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-50">Steam deals</h1>
+            <p className="mt-1 text-sm text-slate-400">
               {payload
                 ? `${payload.rows.length.toLocaleString("en-US")} discounted ${
                     payload.rows.length === 1 ? "item" : "items"
@@ -224,27 +225,27 @@ function DealsExplorer({
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[14rem_minmax(0,1fr)] min-[90rem]:grid-cols-[16rem_minmax(0,1fr)]">
       {/* Phones and tablets: collapsible. Desktop: always-open sidebar. */}
-      <details className="group rounded-2xl border border-zinc-800 bg-[#131316] lg:hidden">
-        <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between rounded-2xl px-4 text-sm font-medium text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
+      <details className="group rounded-2xl border border-slate-800 bg-surface lg:hidden">
+        <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between rounded-2xl px-4 text-sm font-medium text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400">
           <span>
             Filters
             {active > 0 ? (
-              <span className="ml-2 rounded-full bg-emerald-400 px-1.5 py-0.5 text-[11px] font-semibold text-zinc-950">
+              <span className="ml-2 rounded-full bg-steam-400 px-1.5 py-0.5 text-[11px] font-semibold text-slate-950">
                 {active}
               </span>
             ) : null}
           </span>
-          <span aria-hidden="true" className="text-zinc-500 transition-transform group-open:rotate-180">
+          <span aria-hidden="true" className="text-slate-500 transition-transform group-open:rotate-180">
             ▾
           </span>
         </summary>
-        <div className="border-t border-zinc-800 p-4">
+        <div className="border-t border-slate-800 p-4">
           <FilterPanel payload={payload} filters={filters} update={update} idPrefix="m" />
         </div>
       </details>
       <aside
         aria-label="Filters"
-        className="hidden self-start rounded-2xl border border-zinc-800 bg-[#131316] p-4 lg:sticky lg:top-20 lg:block"
+        className="hidden self-start rounded-2xl border border-slate-800 bg-surface p-4 lg:sticky lg:top-20 lg:block"
       >
         <FilterPanel payload={payload} filters={filters} update={update} idPrefix="d" />
       </aside>
@@ -252,6 +253,8 @@ function DealsExplorer({
       <section aria-label="Deals" className="min-w-0">
         <ResultsBar
           slice={slice}
+          title={filters.title}
+          onTitle={(title) => update({ title })}
           sort={sort}
           onSortChoice={(next) => {
             setSort(next);
@@ -266,12 +269,16 @@ function DealsExplorer({
         />
 
         {slice.total === 0 ? (
-          <div className="mt-3 rounded-2xl border border-zinc-800 bg-[#131316] p-8 text-center text-sm text-zinc-400">
-            No deals match these filters.{" "}
+          <div className="mt-3 rounded-2xl border border-slate-800 bg-surface p-8 text-center text-sm text-slate-400">
+            {filters.title.trim() ? (
+              <>No deals in this list match &ldquo;{filters.title.trim()}&rdquo;. To look up any game on Steam, use the search at the top.{" "}</>
+            ) : (
+              <>No deals match these filters.{" "}</>
+            )}
             <button
               type="button"
               onClick={() => update(DEFAULT_FILTERS)}
-              className="font-medium text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+              className="font-medium text-steam-300 underline underline-offset-2 hover:text-steam-200"
             >
               Reset filters
             </button>
@@ -310,7 +317,7 @@ function FilterPanel({
     <div className="space-y-5 text-sm">
       <Fieldset legend="Deal status">
         {!payload.lowsAvailable ? (
-          <p className="mb-2 text-xs leading-relaxed text-zinc-500">
+          <p className="mb-2 text-xs leading-relaxed text-slate-500">
             Price history is not connected, so these are unavailable.
           </p>
         ) : null}
@@ -330,7 +337,7 @@ function FilterPanel({
 
       <Fieldset legend="Owned games">
         {!payload.ownershipKnown ? (
-          <p className="mb-2 text-xs leading-relaxed text-zinc-500">
+          <p className="mb-2 text-xs leading-relaxed text-slate-500">
             Your library is private, so ownership is unknown.
           </p>
         ) : null}
@@ -426,7 +433,7 @@ function FilterPanel({
 function Fieldset({ legend, children }: { legend: string; children: ReactNode }) {
   return (
     <fieldset>
-      <legend className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
+      <legend className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
         {legend}
       </legend>
       {children}
@@ -453,7 +460,7 @@ function RadioGroup<V extends string>({
         <label
           key={option.value}
           className={`flex min-h-9 items-center gap-2.5 rounded-lg px-1.5 ${
-            disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-zinc-800/60"
+            disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-slate-800/60"
           }`}
         >
           <input
@@ -463,9 +470,9 @@ function RadioGroup<V extends string>({
             checked={value === option.value}
             disabled={disabled}
             onChange={() => onChange(option.value)}
-            className="h-4 w-4 accent-emerald-400"
+            className="h-4 w-4 accent-steam-400"
           />
-          <span className="text-zinc-200">{option.label}</span>
+          <span className="text-slate-200">{option.label}</span>
         </label>
       ))}
     </div>
@@ -488,18 +495,18 @@ function Checkbox({
   return (
     <label
       htmlFor={id}
-      className="flex min-h-9 cursor-pointer items-start gap-2.5 rounded-lg px-1.5 py-1.5 hover:bg-zinc-800/60"
+      className="flex min-h-9 cursor-pointer items-start gap-2.5 rounded-lg px-1.5 py-1.5 hover:bg-slate-800/60"
     >
       <input
         id={id}
         type="checkbox"
         checked={checked}
         onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.checked)}
-        className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-400"
+        className="mt-0.5 h-4 w-4 shrink-0 accent-steam-400"
       />
       <span>
-        <span className="text-zinc-200">{label}</span>
-        {hint ? <span className="block text-xs text-zinc-500">{hint}</span> : null}
+        <span className="text-slate-200">{label}</span>
+        {hint ? <span className="block text-xs text-slate-500">{hint}</span> : null}
       </span>
     </label>
   );
@@ -522,7 +529,7 @@ function NumberField({
 }) {
   return (
     <div>
-      <label htmlFor={id} className={hideLabel ? "sr-only" : "mb-1 block text-xs text-zinc-400"}>
+      <label htmlFor={id} className={hideLabel ? "sr-only" : "mb-1 block text-xs text-slate-400"}>
         {label}
       </label>
       <input
@@ -538,7 +545,7 @@ function NumberField({
           const number = Number(raw);
           onChange(raw === "" || !Number.isFinite(number) || number < 0 ? null : number);
         }}
-        className="min-h-10 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-2.5 text-sm tabular-nums text-zinc-100 placeholder:text-zinc-600 focus-visible:border-emerald-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/40"
+        className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 text-sm tabular-nums text-slate-100 placeholder:text-slate-600 focus-visible:border-steam-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400/40"
       />
     </div>
   );
@@ -564,10 +571,10 @@ function RangeField({
   return (
     <div>
       <div className="mb-2 flex items-baseline justify-between">
-        <label htmlFor={id} className="text-xs font-medium uppercase tracking-wider text-zinc-500">
+        <label htmlFor={id} className="text-xs font-medium uppercase tracking-wider text-slate-500">
           {label}
         </label>
-        <output htmlFor={id} className="text-sm font-semibold tabular-nums text-zinc-200">
+        <output htmlFor={id} className="text-sm font-semibold tabular-nums text-slate-200">
           {format(value)}
         </output>
       </div>
@@ -580,7 +587,7 @@ function RangeField({
         value={value}
         aria-valuetext={format(value)}
         onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(Number(event.target.value))}
-        className="h-6 w-full cursor-pointer accent-emerald-400"
+        className="h-6 w-full cursor-pointer accent-steam-400"
       />
     </div>
   );
@@ -592,6 +599,8 @@ function RangeField({
 
 function ResultsBar({
   slice,
+  title,
+  onTitle,
   sort,
   onSortChoice,
   pageSize,
@@ -599,6 +608,8 @@ function ResultsBar({
   onReset,
 }: {
   slice: { from: number; to: number; total: number };
+  title: string;
+  onTitle: (title: string) => void;
   sort: { key: SortKey; direction: SortDirection };
   onSortChoice: (sort: { key: SortKey; direction: SortDirection }) => void;
   pageSize: PageSize;
@@ -611,16 +622,16 @@ function ResultsBar({
   const listed = SORT_CHOICES.some((choice) => `${choice.key}:${choice.direction}` === current);
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <p aria-live="polite" className="text-sm text-zinc-400">
+      <p aria-live="polite" className="text-sm text-slate-400">
         {slice.total === 0 ? (
           "No matches"
         ) : (
           <>
             Showing{" "}
-            <span className="font-semibold tabular-nums text-zinc-200">
+            <span className="font-semibold tabular-nums text-slate-200">
               {slice.from}–{slice.to}
             </span>{" "}
-            of <span className="font-semibold tabular-nums text-zinc-200">{slice.total.toLocaleString("en-US")}</span>
+            of <span className="font-semibold tabular-nums text-slate-200">{slice.total.toLocaleString("en-US")}</span>
           </>
         )}
         {onReset ? (
@@ -629,16 +640,23 @@ function ResultsBar({
             <button
               type="button"
               onClick={onReset}
-              className="font-medium text-emerald-300 underline-offset-2 hover:underline"
+              className="font-medium text-steam-300 underline-offset-2 hover:underline"
             >
               Reset filters
             </button>
           </>
         ) : null}
       </p>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className="flex w-full flex-wrap items-center gap-x-4 gap-y-2 sm:w-auto">
+        <TitleFilter
+          value={title}
+          onChange={onTitle}
+          label="Filter deals by game title"
+          placeholder="Filter deals by title"
+          className="w-full sm:w-64"
+        />
         <div className="flex items-center gap-2">
-          <label htmlFor={sortId} className="text-sm text-zinc-500">
+          <label htmlFor={sortId} className="text-sm text-slate-500">
             Sort by
           </label>
           <select
@@ -648,7 +666,7 @@ function ResultsBar({
               const [key, direction] = event.target.value.split(":") as [SortKey, SortDirection];
               onSortChoice({ key, direction });
             }}
-            className="min-h-10 rounded-lg border border-zinc-700 bg-zinc-900 px-2 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+            className="min-h-10 rounded-lg border border-slate-700 bg-slate-900 px-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400"
           >
             {listed ? null : (
               // A column header chose an order the menu does not list.
@@ -664,7 +682,7 @@ function ResultsBar({
           </select>
         </div>
         <div className="flex items-center gap-2">
-        <label htmlFor={selectId} className="text-sm text-zinc-500">
+        <label htmlFor={selectId} className="text-sm text-slate-500">
           Per page
         </label>
         <select
@@ -673,7 +691,7 @@ function ResultsBar({
           onChange={(event: ChangeEvent<HTMLSelectElement>) =>
             onPageSize(Number(event.target.value) as PageSize)
           }
-          className="min-h-10 rounded-lg border border-zinc-700 bg-zinc-900 px-2 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+          className="min-h-10 rounded-lg border border-slate-700 bg-slate-900 px-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400"
         >
           {PAGE_SIZES.map((size) => (
             <option key={size} value={size}>
@@ -706,8 +724,8 @@ function Pager({
         <span aria-hidden="true">←</span>
         <span className="ml-1">Previous</span>
       </button>
-      <p className="text-sm tabular-nums text-zinc-400">
-        Page <span className="font-semibold text-zinc-200">{page}</span> of {pageCount}
+      <p className="text-sm tabular-nums text-slate-400">
+        Page <span className="font-semibold text-slate-200">{page}</span> of {pageCount}
       </p>
       <button
         type="button"
@@ -732,12 +750,12 @@ function Footnotes({
   refreshing: boolean;
 }) {
   return (
-    <div className="mt-6 space-y-1.5 text-xs leading-relaxed text-zinc-500">
+    <div className="mt-6 space-y-1.5 text-xs leading-relaxed text-slate-500">
       {payload.lowsAvailable ? (
         <p>
-          <strong className="font-medium text-zinc-400">Historical low</strong>: below Steam&rsquo;s
-          previous all-time low. <strong className="font-medium text-zinc-400">Matching low</strong>:
-          equal to it. <strong className="font-medium text-zinc-400">1-year low</strong>: at or below
+          <strong className="font-medium text-slate-400">Historical low</strong>: below Steam&rsquo;s
+          previous all-time low. <strong className="font-medium text-slate-400">Matching low</strong>:
+          equal to it. <strong className="font-medium text-slate-400">1-year low</strong>: at or below
           the lowest price at any tracked store in the past 12 months. A price under the badges shows
           another store&rsquo;s current price when it beats Steam&rsquo;s (for example
           &ldquo;$13.49 at GOG&rdquo;). Price data from{" "}
@@ -745,7 +763,7 @@ function Footnotes({
             href="https://isthereanydeal.com/"
             target="_blank"
             rel="noopener noreferrer"
-            className="underline decoration-zinc-700 underline-offset-2 hover:text-zinc-300"
+            className="underline decoration-slate-700 underline-offset-2 hover:text-slate-300"
           >
             IsThereAnyDeal
           </a>
@@ -763,7 +781,7 @@ function Footnotes({
         <p>Every discounted game among Steam&rsquo;s top 1,000 sellers, straight from Steam.</p>
       )}
       <p>
-        <strong className="font-medium text-zinc-400">Top deals</strong> ranks by log10(Steam
+        <strong className="font-medium text-slate-400">Top deals</strong> ranks by log10(Steam
         reviews) &times; discount %, so widely reviewed games on sale come first. Ratings are the
         share of positive Steam reviews in all languages. US prices.
       </p>
@@ -776,7 +794,7 @@ function Footnotes({
             type="button"
             onClick={onRefresh}
             disabled={refreshing}
-            className="font-medium text-emerald-300 underline-offset-2 hover:underline disabled:cursor-wait disabled:opacity-60"
+            className="font-medium text-steam-300 underline-offset-2 hover:underline disabled:cursor-wait disabled:opacity-60"
           >
             {refreshing ? "Loading…" : "Load more ratings"}
           </button>
@@ -825,14 +843,14 @@ function DealsTable({
     // `relative` makes this frame the containing block for the visually hidden
     // text in the rows, so it scrolls with the table instead of widening the
     // whole page on phones.
-    <div ref={frame} className="relative mt-3 overflow-x-auto rounded-2xl border border-zinc-800 bg-[#131316]">
+    <div ref={frame} className="relative mt-3 overflow-x-auto rounded-2xl border border-slate-800 bg-surface">
       <table className="w-full min-w-[56rem] table-fixed border-collapse text-left text-sm">
         <caption className="sr-only">
           Steam deals. Column headers with buttons sort the table. Select a game to show its
           details below its row.
         </caption>
         <thead>
-          <tr className="border-b border-zinc-800 text-[11px] uppercase tracking-wide text-zinc-500 min-[90rem]:text-xs min-[90rem]:tracking-wider">
+          <tr className="border-b border-slate-800 text-[11px] uppercase tracking-wide text-slate-500 min-[90rem]:text-xs min-[90rem]:tracking-wider">
             {COLUMNS.map((column) => {
               const active = column.key !== null && column.key === sort.key;
               return (
@@ -850,13 +868,13 @@ function DealsTable({
                     <button
                       type="button"
                       onClick={() => onSort(column.key as SortKey)}
-                      className={`inline-flex min-h-8 items-center gap-0.5 rounded-md uppercase tracking-wide hover:text-zinc-200 min-[90rem]:gap-1 min-[90rem]:tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
-                        active ? "text-zinc-100" : ""
+                      className={`inline-flex min-h-8 items-center gap-0.5 rounded-md uppercase tracking-wide hover:text-slate-200 min-[90rem]:gap-1 min-[90rem]:tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400 ${
+                        active ? "text-slate-100" : ""
                       }`}
                     >
                       {column.label}
                       {/* Below 1440px (90rem) only the active column shows its arrow, so labels fit. */}
-                      <span aria-hidden="true" className={active ? "text-emerald-400" : "hidden text-zinc-700 min-[90rem]:inline"}>
+                      <span aria-hidden="true" className={active ? "text-steam-400" : "hidden text-slate-700 min-[90rem]:inline"}>
                         {active ? (sort.direction === "asc" ? "▲" : "▼") : "↕"}
                       </span>
                     </button>
@@ -881,7 +899,7 @@ function DealsTable({
                   onToggle={() => setExpanded(open ? null : row.appid)}
                 />
                 {open ? (
-                  <tr id={`deal-${row.appid}-details`} className="border-b border-zinc-800/70">
+                  <tr id={`deal-${row.appid}-details`} className="border-b border-slate-800/70">
                     <td colSpan={COLUMNS.length} className="p-0">
                       <DealDetails row={row} width={frameWidth} onClose={() => setExpanded(null)} />
                     </td>
@@ -915,8 +933,8 @@ function DealTableRow({
   return (
     <tr
       onClick={onToggle}
-      className={`cursor-pointer border-b border-zinc-800/70 last:border-0 hover:bg-zinc-900/60 ${
-        open ? "bg-zinc-900/70" : ""
+      className={`cursor-pointer border-b border-slate-800/70 last:border-0 hover:bg-slate-900/60 ${
+        open ? "bg-slate-900/70" : ""
       }`}
     >
       <td className="px-3 py-2">
@@ -933,7 +951,7 @@ function DealTableRow({
               className="h-9 w-24 shrink-0 rounded object-cover"
             />
           ) : (
-            <span aria-hidden="true" className="h-9 w-24 shrink-0 rounded bg-zinc-800" />
+            <span aria-hidden="true" className="h-9 w-24 shrink-0 rounded bg-slate-800" />
           )}
           <div className="min-w-0">
             <button
@@ -944,8 +962,8 @@ function DealTableRow({
                 event.stopPropagation();
                 onToggle();
               }}
-              className={`line-clamp-3 max-w-full break-words rounded text-left font-medium leading-snug underline-offset-4 hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
-                open ? "text-emerald-300 decoration-emerald-400/60" : "text-zinc-100 decoration-zinc-500"
+              className={`line-clamp-3 max-w-full break-words rounded text-left font-medium leading-snug underline-offset-4 hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400 ${
+                open ? "text-steam-300 decoration-steam-400/60" : "text-slate-100 decoration-slate-500"
               }`}
               title={row.name}
             >
@@ -953,38 +971,38 @@ function DealTableRow({
               <span className="sr-only">{open ? ", hide details" : ", show details"}</span>
             </button>
             <div className="mt-0.5 flex flex-wrap gap-1">
-              {row.type === "dlc" ? <Chip tone="zinc">DLC</Chip> : null}
-              {row.owned ? <Chip tone="sky">Owned</Chip> : null}
+              {row.type === "dlc" ? <Chip tone="slate">DLC</Chip> : null}
+              {row.owned ? <Chip tone="slate">Owned</Chip> : null}
               {row.wished ? <Chip tone="violet">Steam wishlist</Chip> : null}
             </div>
           </div>
         </div>
       </td>
       <td className="px-3 py-2 text-right">
-        <span className="inline-block rounded bg-emerald-400/15 px-1.5 py-0.5 font-semibold tabular-nums text-emerald-300">
+        <span className="inline-block rounded bg-steam-400/15 px-1.5 py-0.5 font-semibold tabular-nums text-steam-300">
           -{row.discountPercent}%
         </span>
       </td>
       <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
-        <span className="font-semibold text-zinc-50">{formatMoney(row.price, row.currency)}</span>
-        <s className="block text-xs text-zinc-500">
+        <span className="font-semibold text-slate-50">{formatMoney(row.price, row.currency)}</span>
+        <s className="block text-xs text-slate-500">
           <span className="sr-only">was </span>
           {formatMoney(row.regular, row.currency)}
         </s>
       </td>
       <td className="px-3 py-2">
         <div className="flex flex-wrap gap-1">
-          {row.badges.historicalLow ? <Chip tone="emerald">Historical low</Chip> : null}
+          {row.badges.historicalLow ? <Chip tone="steam">Historical low</Chip> : null}
           {row.badges.matchingLow ? <Chip tone="lime">Matching low</Chip> : null}
           {row.badges.yearLow ? <Chip tone="amber">1-year low</Chip> : null}
         </div>
         {row.cheaperElsewhere ? (
           <p
-            className="mt-1 truncate text-xs text-zinc-400"
+            className="mt-1 truncate text-xs text-slate-400"
             title={`Cheaper at ${row.cheaperElsewhere.shop}: ${formatMoney(row.cheaperElsewhere.price, row.currency)}`}
           >
             <span className="sr-only">Cheaper elsewhere: </span>
-            <span className="font-medium tabular-nums text-zinc-200">
+            <span className="font-medium tabular-nums text-slate-200">
               {formatMoney(row.cheaperElsewhere.price, row.currency)}
             </span>{" "}
             at {row.cheaperElsewhere.shop}
@@ -994,10 +1012,10 @@ function DealTableRow({
       <td className="whitespace-nowrap px-3 py-2 text-right">
         <Rating percent={row.reviewPercent} count={row.reviewCount} label={row.reviewLabel} />
       </td>
-      <td className="whitespace-nowrap px-3 py-2 text-right text-zinc-300">
+      <td className="whitespace-nowrap px-3 py-2 text-right text-slate-300">
         {row.comingSoon ? "Coming soon" : formatRelease(row.releaseDate)}
       </td>
-      <td className="whitespace-nowrap px-3 py-2 text-right text-zinc-300">
+      <td className="whitespace-nowrap px-3 py-2 text-right text-slate-300">
         <SaleEnds iso={row.saleEndsAt} now={now} />
       </td>
       <td className="px-3 py-2 text-right" onClick={stopRowToggle}>
@@ -1028,7 +1046,7 @@ function DealDetails({
     <div
       // Sticky inside the horizontally scrolling table: the card stays in
       // view and as wide as the visible frame, not the 56rem table.
-      className="sticky left-0 border-t border-zinc-800 bg-[#18181c] p-4 sm:p-5"
+      className="sticky left-0 border-t border-slate-800 bg-surface-raised p-4 sm:p-5"
       style={width ? { width } : undefined}
       onKeyDown={(event: KeyboardEvent) => {
         if (event.key === "Escape") onClose();
@@ -1045,14 +1063,14 @@ function DealDetails({
             height={215}
             loading="lazy"
             decoding="async"
-            className="aspect-[460/215] w-full shrink-0 rounded-xl bg-zinc-900 object-cover sm:w-56 lg:w-64"
+            className="aspect-[460/215] w-full shrink-0 rounded-xl bg-slate-900 object-cover sm:w-56 lg:w-64"
           />
         ) : null}
         <div className="flex min-w-0 flex-1 flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
-          <h3 className="text-base font-semibold text-zinc-50">{row.name}</h3>
-          <p className="mt-0.5 text-sm text-zinc-400">
-            <span className="font-semibold tabular-nums text-zinc-100">{formatMoney(row.price, row.currency)}</span>{" "}
+          <h3 className="text-base font-semibold text-slate-50">{row.name}</h3>
+          <p className="mt-0.5 text-sm text-slate-400">
+            <span className="font-semibold tabular-nums text-slate-100">{formatMoney(row.price, row.currency)}</span>{" "}
             on Steam, {row.discountPercent}% off
             {row.reviewPercent !== null && row.reviewCount !== null
               ? ` · ${row.reviewPercent}% positive of ${row.reviewCount.toLocaleString("en-US")} reviews`
@@ -1076,11 +1094,15 @@ function DealDetails({
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div className="min-w-0 space-y-5">
-          <PriceHistoryPanel appid={row.appid} eager />
+      {/* Top row: facts and price breakdown side by side. Bottom row: the
+          price history chart, full width so years of history have room. */}
+      <div className="mt-5 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="min-w-0">
+          <GameFactsPanel appid={row.appid} mode="full" insights={insights} maxTags={3} showFeatures={false} />
+        </div>
+        <div className="min-w-0">
           {insights.isPending ? (
-            <div aria-busy="true" aria-label="Loading store prices" className="h-24 animate-pulse rounded-lg bg-zinc-800/60" />
+            <div aria-busy="true" aria-label="Loading store prices" className="h-24 animate-pulse rounded-lg bg-slate-800/60" />
           ) : (
             <StorePriceList
               data={data?.prices ?? null}
@@ -1089,9 +1111,9 @@ function DealDetails({
             />
           )}
         </div>
-        <div className="min-w-0">
-          <GameFactsPanel appid={row.appid} mode="full" insights={insights} maxTags={3} showFeatures={false} />
-        </div>
+      </div>
+      <div className="mt-6 border-t border-slate-800 pt-4">
+        <PriceHistoryPanel appid={row.appid} eager />
       </div>
     </div>
   );
@@ -1113,14 +1135,14 @@ function useElementWidth(ref: { readonly current: HTMLElement | null }): number 
   return width;
 }
 
-type ChipTone = "emerald" | "lime" | "amber" | "sky" | "violet" | "zinc";
+type ChipTone = "steam" | "lime" | "amber" | "sky" | "violet" | "slate";
 const CHIP: Readonly<Record<ChipTone, string>> = {
-  emerald: "bg-emerald-400/15 text-emerald-300 ring-emerald-400/40",
+  steam: "bg-steam-400/15 text-steam-300 ring-steam-400/40",
   lime: "bg-lime-400/10 text-lime-300 ring-lime-400/30",
   amber: "bg-amber-400/10 text-amber-300 ring-amber-400/30",
   sky: "bg-sky-400/10 text-sky-300 ring-sky-400/30",
   violet: "bg-violet-400/10 text-violet-300 ring-violet-400/30",
-  zinc: "bg-zinc-800 text-zinc-400 ring-zinc-700",
+  slate: "bg-slate-800 text-slate-400 ring-slate-700",
 };
 
 function Chip({ tone, children }: { tone: ChipTone; children: ReactNode }) {
@@ -1144,25 +1166,25 @@ function Rating({
 }) {
   if (count !== null && count < STEAM_MIN_REVIEWS_FOR_SCORE) {
     return (
-      <span className="text-xs text-zinc-500" title="Steam shows no score below 10 reviews">
+      <span className="text-xs text-slate-500" title="Steam shows no score below 10 reviews">
         {count === 0 ? "No reviews" : `${count} ${count === 1 ? "review" : "reviews"}`}
       </span>
     );
   }
   if (percent === null) {
     return (
-      <span className="text-zinc-600" title="Rating not loaded yet">
+      <span className="text-slate-600" title="Rating not loaded yet">
         —
       </span>
     );
   }
   const tone =
-    percent >= 80 ? "text-emerald-300" : percent >= 70 ? "text-lime-300" : percent >= 40 ? "text-amber-300" : "text-rose-300";
+    percent >= 80 ? "text-steam-300" : percent >= 70 ? "text-lime-300" : percent >= 40 ? "text-amber-300" : "text-rose-300";
   return (
     <span title={label ?? undefined}>
       <span className={`font-semibold tabular-nums ${tone}`}>{percent}%</span>
       {count !== null ? (
-        <span className="block text-xs tabular-nums text-zinc-500">
+        <span className="block text-xs tabular-nums text-slate-500">
           {compactNumber.format(count)} reviews
         </span>
       ) : null}
@@ -1182,9 +1204,9 @@ function formatRelease(day: string | null): string {
 
 /** "in 3 days", "in 5 hours", or "—". Exact time in the tooltip. */
 function SaleEnds({ iso, now }: { iso: string | null; now: number }) {
-  if (!iso) return <span className="text-zinc-600">—</span>;
+  if (!iso) return <span className="text-slate-600">—</span>;
   const ms = Date.parse(iso) - now;
-  if (!Number.isFinite(ms)) return <span className="text-zinc-600">—</span>;
+  if (!Number.isFinite(ms)) return <span className="text-slate-600">—</span>;
   const exact = new Date(iso).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
@@ -1216,7 +1238,7 @@ function WatchToggle({ row, steamid }: { row: DealRow; steamid: string }) {
     return (
       <Link
         href="/wishlist"
-        className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs font-medium text-emerald-300 hover:bg-emerald-400/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+        className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs font-medium text-steam-300 hover:bg-steam-400/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400"
       >
         <span aria-hidden="true">✓</span>
         {row.watched || watch.isSuccess ? "Watching" : "Wishlisted"}
@@ -1231,7 +1253,7 @@ function WatchToggle({ row, steamid }: { row: DealRow; steamid: string }) {
         type="button"
         onClick={() => watch.mutate()}
         disabled={watch.isPending}
-        className="inline-flex min-h-9 items-center rounded-lg border border-zinc-700 px-2.5 text-xs font-medium text-zinc-200 transition-colors hover:border-emerald-400/60 hover:bg-emerald-400/10 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-60"
+        className="inline-flex min-h-9 items-center rounded-lg border border-slate-700 px-2.5 text-xs font-medium text-slate-200 transition-colors hover:border-steam-400/60 hover:bg-steam-400/10 hover:text-steam-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400 disabled:opacity-60"
       >
         {watch.isPending ? "Adding…" : "Watch"}
         <span className="sr-only">: {row.name}</span>
@@ -1252,17 +1274,17 @@ function WatchToggle({ row, steamid }: { row: DealRow; steamid: string }) {
 function DealsSkeleton() {
   return (
     <div aria-busy="true" aria-label="Loading deals" className="grid grid-cols-1 gap-6 lg:grid-cols-[14rem_minmax(0,1fr)] min-[90rem]:grid-cols-[16rem_minmax(0,1fr)]">
-      <div className="hidden h-[32rem] animate-pulse rounded-2xl border border-zinc-800 bg-[#131316] lg:block" />
+      <div className="hidden h-[32rem] animate-pulse rounded-2xl border border-slate-800 bg-surface lg:block" />
       <div>
-        <div className="h-12 animate-pulse rounded-2xl bg-zinc-900 lg:hidden" />
-        <div className="mt-3 h-6 w-48 animate-pulse rounded bg-zinc-800" />
-        <div className="mt-3 overflow-hidden rounded-2xl border border-zinc-800 bg-[#131316]">
+        <div className="h-12 animate-pulse rounded-2xl bg-slate-900 lg:hidden" />
+        <div className="mt-3 h-6 w-48 animate-pulse rounded bg-slate-800" />
+        <div className="mt-3 overflow-hidden rounded-2xl border border-slate-800 bg-surface">
           {Array.from({ length: 8 }, (_, i) => (
-            <div key={i} className="flex items-center gap-3 border-b border-zinc-800/70 px-3 py-2 last:border-0">
-              <div className="h-[45px] w-[120px] shrink-0 animate-pulse rounded bg-zinc-800" />
-              <div className="h-4 flex-1 animate-pulse rounded bg-zinc-800" />
-              <div className="h-4 w-14 animate-pulse rounded bg-zinc-800" />
-              <div className="h-4 w-14 animate-pulse rounded bg-zinc-800" />
+            <div key={i} className="flex items-center gap-3 border-b border-slate-800/70 px-3 py-2 last:border-0">
+              <div className="h-[45px] w-[120px] shrink-0 animate-pulse rounded bg-slate-800" />
+              <div className="h-4 flex-1 animate-pulse rounded bg-slate-800" />
+              <div className="h-4 w-14 animate-pulse rounded bg-slate-800" />
+              <div className="h-4 w-14 animate-pulse rounded bg-slate-800" />
             </div>
           ))}
         </div>

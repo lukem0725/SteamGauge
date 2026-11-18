@@ -77,6 +77,8 @@ const KEYLESS_METHODS: ReadonlySet<string> = new Set(["GetAppReviews"]);
 const STORE_METHODS = {
   appdetails: "/api/appdetails",
   featuredcategories: "/api/featuredcategories",
+  /** Steam's own store search (the search box on the store). Used by global search. */
+  storesearch: "/api/storesearch/",
 } as const;
 
 export type SteamWebApiMethod = keyof typeof WEB_API_METHODS;

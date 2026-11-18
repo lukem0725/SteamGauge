@@ -42,6 +42,7 @@ import {
   fetchWishlistView,
 } from "./composites";
 import { storeMetaInput } from "./insights";
+import { fetchStoreSearch } from "./search";
 import {
   REFRESH_LEASE_SECONDS,
   TTL,
@@ -274,6 +275,7 @@ const REQUESTS: { readonly [R in SteamResource]: (...args: KeyArgs<R>) => Reques
   appStoreMeta: (appid, cc) => web("GetItems", { input_json: storeMetaInput(appid, cc) }),
   steamTags: (language) => web("GetTagList", { language }),
   itadAppPrices: (appid, cc) => composite((io) => fetchItadAppPrices(io, appid, cc)),
+  storeSearch: (cc, term) => composite((io) => fetchStoreSearch(io, term, cc)),
   appReviews: (appid) =>
     web("GetAppReviews", {
       input_json: JSON.stringify({

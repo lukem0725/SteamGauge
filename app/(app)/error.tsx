@@ -38,7 +38,7 @@ export default function AppError({
       >
         <p>Something went wrong on our side. Trying again usually fixes it.</p>
         {error.digest ? (
-          <p className="mt-2 text-xs text-zinc-500">Reference: {error.digest}</p>
+          <p className="mt-2 text-xs text-slate-500">Reference: {error.digest}</p>
         ) : null}
       </StatePanel>
     </div>

@@ -32,10 +32,12 @@ import {
   useInViewOnce,
 } from "@/components/ui-kit";
 import { pageContainer } from "@/components/layout-width";
+import { TitleFilter } from "@/components/title-filter";
 import { apiGet } from "@/lib/api/client";
 import type { SessionUser } from "@/lib/auth/session";
 import type { CacheMeta } from "@/lib/steam/cached-fetch";
 import type { AppDetails, OwnedGame, OwnedGames } from "@/lib/steam/endpoints";
+import { matchesTitle } from "@/lib/title-search";
 import { costPerHour, rateValue, simulatedHoursToBeat } from "@/lib/value";
 
 // Re-exported for tests and previews.
@@ -99,7 +101,7 @@ function Dashboard({ user }: DashboardViewProps) {
   const result = library.data;
 
   return (
-    <div className="bg-zinc-950 text-zinc-100 antialiased">
+    <div className="bg-page text-slate-100 antialiased">
       <div className={pageContainer}>
         <Header user={user} meta={result?.meta ?? null} isFetching={library.isFetching} />
 
@@ -159,19 +161,19 @@ function Header({
             alt=""
             width={44}
             height={44}
-            className="h-11 w-11 shrink-0 rounded-full ring-1 ring-zinc-700"
+            className="h-11 w-11 shrink-0 rounded-full ring-1 ring-slate-700"
           />
         ) : (
           <div
             aria-hidden="true"
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-zinc-800 text-sm font-semibold text-zinc-300 ring-1 ring-zinc-700"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-800 text-sm font-semibold text-slate-300 ring-1 ring-slate-700"
           >
             {name.slice(0, 1).toUpperCase()}
           </div>
         )}
         <div className="min-w-0">
-          <p className="text-xs uppercase tracking-wider text-zinc-500">Dashboard</p>
-          <h1 className="truncate text-lg font-semibold leading-tight text-zinc-50">{name}</h1>
+          <p className="text-xs uppercase tracking-wider text-slate-500">Dashboard</p>
+          <h1 className="truncate text-lg font-semibold leading-tight text-slate-50">{name}</h1>
         </div>
       </div>
       <DataAgeTicker meta={meta} isFetching={isFetching} />
@@ -202,12 +204,12 @@ function LibraryHealthBanner({
   return (
     <section
       aria-labelledby="library-health-heading"
-      className="relative overflow-hidden rounded-3xl border border-zinc-800 bg-[#131316] p-5 sm:p-7"
+      className="relative overflow-hidden rounded-3xl border border-slate-800 bg-surface p-5 sm:p-7"
     >
       {/* Soft glow. Decorative only. */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute -right-24 -top-24 h-64 w-64 rounded-full bg-emerald-500/10 blur-3xl"
+        className="pointer-events-none absolute -right-24 -top-24 h-64 w-64 rounded-full bg-steam-500/10 blur-3xl"
       />
       <div
         aria-hidden="true"
@@ -215,12 +217,12 @@ function LibraryHealthBanner({
       />
 
       <div className="relative">
-        <p className="text-xs font-medium uppercase tracking-wider text-emerald-400">
+        <p className="text-xs font-medium uppercase tracking-wider text-steam-400">
           Library health
         </p>
         <h2
           id="library-health-heading"
-          className="mt-1 text-xl font-semibold tracking-tight text-zinc-50 sm:text-2xl"
+          className="mt-1 text-xl font-semibold tracking-tight text-slate-50 sm:text-2xl"
         >
           {backlog === 0
             ? "Every game played. Spotless."
@@ -233,10 +235,10 @@ function LibraryHealthBanner({
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={playedPercent}
-          className="mt-4 h-2 w-full overflow-hidden rounded-full bg-zinc-800"
+          className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-800"
         >
           <div
-            className="h-full rounded-full bg-emerald-400 transition-[width] duration-700"
+            className="h-full rounded-full bg-steam-400 transition-[width] duration-700"
             style={{ width: `${playedPercent}%` }}
           />
         </div>
@@ -312,8 +314,8 @@ function StatButton({
       ? "border-amber-300 bg-amber-400/15 ring-2 ring-amber-300/60"
       : "border-amber-400/30 bg-amber-400/10 hover:border-amber-300/60 hover:bg-amber-400/15"
     : active
-      ? "border-emerald-400 bg-zinc-800/80 ring-2 ring-emerald-400/50"
-      : "border-zinc-800 bg-zinc-900/60 hover:border-zinc-600 hover:bg-zinc-800/60";
+      ? "border-steam-400 bg-slate-800/80 ring-2 ring-steam-400/50"
+      : "border-slate-800 bg-slate-900/60 hover:border-slate-600 hover:bg-slate-800/60";
 
   return (
     <button
@@ -321,18 +323,18 @@ function StatButton({
       aria-pressed={active}
       aria-controls="library-list"
       onClick={() => onSelect(filter)}
-      className={`group relative rounded-2xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 ${tone} ${className}`}
+      className={`group relative rounded-2xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-300 ${tone} ${className}`}
     >
       <span
         className={`flex items-center justify-between gap-2 text-xs font-medium uppercase tracking-wider ${
-          accent ? "text-amber-300" : "text-zinc-500"
+          accent ? "text-amber-300" : "text-slate-500"
         }`}
       >
         {label}
         {active ? (
           <span
             className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold normal-case tracking-normal ${
-              accent ? "bg-amber-300 text-zinc-950" : "bg-emerald-400 text-zinc-950"
+              accent ? "bg-amber-300 text-slate-950" : "bg-steam-400 text-slate-950"
             }`}
           >
             Showing
@@ -342,7 +344,7 @@ function StatButton({
       <span className="mt-1 flex items-baseline gap-2">
         <span
           className={`tabular-nums tracking-tight ${
-            accent ? "text-4xl font-bold text-amber-200" : "text-3xl font-semibold text-zinc-50"
+            accent ? "text-4xl font-bold text-amber-200" : "text-3xl font-semibold text-slate-50"
           }`}
         >
           {value}
@@ -351,7 +353,7 @@ function StatButton({
       </span>
       <span
         className={`mt-2 block text-xs ${
-          active ? "text-zinc-300" : "text-zinc-500 group-hover:text-zinc-400"
+          active ? "text-slate-300" : "text-slate-500 group-hover:text-slate-400"
         }`}
       >
         {hint}
@@ -402,16 +404,22 @@ export function selectLibrary(games: readonly OwnedGame[], filter: LibraryFilter
 function LibraryPanel({ games, filter }: { games: readonly OwnedGame[]; filter: LibraryFilter }) {
   const view = selectLibrary(games, filter);
   const [limit, setLimit] = useState(PAGE_STEP);
+  // Kept when switching between the three stat cards.
+  const [query, setQuery] = useState("");
+  const trimmed = query.trim();
 
-  // A new filter starts again from the top of its list.
-  const [shownFilter, setShownFilter] = useState(filter);
-  if (shownFilter !== filter) {
-    setShownFilter(filter);
+  // A new list or a new filter starts again from the top.
+  const [shownKey, setShownKey] = useState(`${filter}|${trimmed}`);
+  if (shownKey !== `${filter}|${trimmed}`) {
+    setShownKey(`${filter}|${trimmed}`);
     setLimit(PAGE_STEP);
   }
 
-  const shown = view.games.slice(0, limit);
-  const total = view.games.length;
+  // Playtime rank is the game's place in the whole list, kept when filtering.
+  const ranked = view.games.map((game, index) => ({ game, rank: index + 1 }));
+  const matching = trimmed ? ranked.filter(({ game }) => matchesTitle(trimmed, game.name)) : ranked;
+  const shown = matching.slice(0, limit);
+  const total = matching.length;
   const isBacklog = filter === "backlog";
 
   return (
@@ -420,30 +428,54 @@ function LibraryPanel({ games, filter }: { games: readonly OwnedGame[]; filter: 
         <div className="min-w-0">
           <p
             className={`text-xs font-medium uppercase tracking-wider ${
-              isBacklog ? "text-amber-400" : "text-emerald-400"
+              isBacklog ? "text-amber-400" : "text-steam-400"
             }`}
           >
             {view.eyebrow}
           </p>
-          <h2 id="library-list-heading" className="mt-1 text-lg font-semibold text-zinc-50">
+          <h2 id="library-list-heading" className="mt-1 text-lg font-semibold text-slate-50">
             {view.title}
           </h2>
         </div>
-        <p aria-live="polite" className="shrink-0 text-right text-xs text-zinc-500">
-          <span className="font-semibold tabular-nums text-zinc-300">
+        <p aria-live="polite" className="shrink-0 text-right text-xs text-slate-500">
+          <span className="font-semibold tabular-nums text-slate-300">
             {wholeNumber.format(total)}
           </span>{" "}
-          {total === 1 ? view.noun.replace(/s$/, "") : view.noun}
+          {trimmed ? `of ${wholeNumber.format(view.games.length)} ` : ""}
+          {(trimmed ? view.games.length : total) === 1 ? view.noun.replace(/s$/, "") : view.noun}
+          {trimmed ? " match" : ""}
           {total > shown.length ? (
             <span className="block">Showing {wholeNumber.format(shown.length)}</span>
           ) : null}
         </p>
       </div>
 
-      {total === 0 ? (
-        <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-400/5 p-6 text-center">
-          <p className="text-base font-medium text-emerald-200">Backlog cleared</p>
-          <p className="mt-1 text-sm text-zinc-400">
+      <TitleFilter
+        value={query}
+        onChange={setQuery}
+        label={`Filter ${view.title.toLowerCase()} by title`}
+        placeholder="Filter your games by title"
+        className="mt-4 w-full sm:max-w-sm"
+      />
+
+      {total === 0 && trimmed ? (
+        <div className="mt-4 rounded-2xl border border-slate-800 bg-surface p-6 text-center">
+          <p className="text-base font-medium text-slate-200">No games here match &ldquo;{trimmed}&rdquo;</p>
+          <p className="mt-1 text-sm text-slate-400">
+            This filters only your library.{" "}
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="font-medium text-steam-300 underline underline-offset-2 hover:text-steam-200"
+            >
+              Clear the filter
+            </button>
+          </p>
+        </div>
+      ) : total === 0 ? (
+        <div className="mt-4 rounded-2xl border border-steam-400/20 bg-steam-400/5 p-6 text-center">
+          <p className="text-base font-medium text-steam-200">Backlog cleared</p>
+          <p className="mt-1 text-sm text-slate-400">
             Every game you own has some playtime. Nothing is gathering dust.
           </p>
         </div>
@@ -454,7 +486,7 @@ function LibraryPanel({ games, filter }: { games: readonly OwnedGame[]; filter: 
               aria-label={view.title}
               className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
             >
-              {shown.map((game) => (
+              {shown.map(({ game }) => (
                 <BacklogCard key={game.appid} game={game} />
               ))}
             </ul>
@@ -463,12 +495,8 @@ function LibraryPanel({ games, filter }: { games: readonly OwnedGame[]; filter: 
               aria-label={view.title}
               className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4"
             >
-              {shown.map((game, index) => (
-                <GameRow
-                  key={game.appid}
-                  game={game}
-                  rank={filter === "playtime" ? index + 1 : null}
-                />
+              {shown.map(({ game, rank }) => (
+                <GameRow key={game.appid} game={game} rank={filter === "playtime" ? rank : null} />
               ))}
             </ol>
           )}
@@ -487,7 +515,7 @@ function LibraryPanel({ games, filter }: { games: readonly OwnedGame[]; filter: 
           ) : null}
 
           {isBacklog ? (
-            <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+            <p className="mt-3 text-xs leading-relaxed text-slate-500">
               Price is the current US store price, not what you paid. Length is a simulated
               placeholder, not real completion data.
             </p>
@@ -509,9 +537,9 @@ function formatPlaytime(minutes: number): string {
 /** A compact row for the "all" and "playtime" lists. No network requests. */
 function GameRow({ game, rank }: { game: OwnedGame; rank: number | null }) {
   return (
-    <li className="relative flex min-h-14 items-center gap-3 rounded-xl border border-zinc-800 bg-[#18181c] px-3 py-2">
+    <li className="relative flex min-h-14 items-center gap-3 rounded-xl border border-slate-800 bg-surface-raised px-3 py-2">
       {rank !== null ? (
-        <span className="w-7 shrink-0 text-right text-xs font-semibold tabular-nums text-zinc-500">
+        <span className="w-7 shrink-0 text-right text-xs font-semibold tabular-nums text-slate-500">
           {rank}
         </span>
       ) : null}
@@ -528,7 +556,7 @@ function GameRow({ game, rank }: { game: OwnedGame; rank: number | null }) {
       ) : (
         <span
           aria-hidden="true"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-zinc-800 text-xs font-semibold text-zinc-400"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-slate-800 text-xs font-semibold text-slate-400"
         >
           {game.name.slice(0, 1).toUpperCase()}
         </span>
@@ -538,13 +566,13 @@ function GameRow({ game, rank }: { game: OwnedGame; rank: number | null }) {
           href={`https://store.steampowered.com/app/${game.appid}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="block truncate text-sm font-medium text-zinc-100 after:absolute after:inset-0 after:rounded-xl hover:text-white focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-emerald-400"
+          className="block truncate text-sm font-medium text-slate-100 after:absolute after:inset-0 after:rounded-xl hover:text-white focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-steam-400"
           title={game.name}
         >
           {game.name}
           <span className="sr-only"> (opens Steam in a new tab)</span>
         </a>
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-slate-500">
           {game.lastPlayedAt
             ? `Last played ${new Date(game.lastPlayedAt).toLocaleDateString("en-US", {
                 month: "short",
@@ -555,7 +583,7 @@ function GameRow({ game, rank }: { game: OwnedGame; rank: number | null }) {
       </div>
       <span
         className={`shrink-0 text-sm font-semibold tabular-nums ${
-          game.playtimeMinutes === 0 ? "text-amber-300" : "text-zinc-200"
+          game.playtimeMinutes === 0 ? "text-amber-300" : "text-slate-200"
         }`}
       >
         {formatPlaytime(game.playtimeMinutes)}
@@ -586,9 +614,9 @@ function BacklogCard({ game }: { game: OwnedGame }) {
       ref={ref}
       // `relative` keeps the visually hidden link text inside the card, so
       // it can never widen the page on phones.
-      className="relative flex flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-[#18181c]"
+      className="relative flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-surface-raised"
     >
-      <div className="relative aspect-[460/215] w-full bg-zinc-900">
+      <div className="relative aspect-[460/215] w-full bg-slate-900">
         {app?.headerImage ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
@@ -599,7 +627,7 @@ function BacklogCard({ game }: { game: OwnedGame }) {
             className="h-full w-full object-cover"
           />
         ) : (
-          <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#27272a,#18181b)]">
+          <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#1e2836,#121822)]">
             {game.iconUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
@@ -611,19 +639,19 @@ function BacklogCard({ game }: { game: OwnedGame }) {
                 className="h-8 w-8 rounded"
               />
             ) : (
-              <span aria-hidden="true" className="text-2xl font-semibold text-zinc-600">
+              <span aria-hidden="true" className="text-2xl font-semibold text-slate-600">
                 {game.name.slice(0, 1).toUpperCase()}
               </span>
             )}
           </div>
         )}
-        <span className="absolute left-2 top-2 rounded-full bg-zinc-950/80 px-2 py-0.5 text-[11px] font-medium text-amber-300 ring-1 ring-amber-400/30">
+        <span className="absolute left-2 top-2 rounded-full bg-slate-950/80 px-2 py-0.5 text-[11px] font-medium text-amber-300 ring-1 ring-amber-400/30">
           0h played
         </span>
       </div>
 
       <div className="flex flex-1 flex-col p-4">
-        <h3 className="truncate text-sm font-semibold text-zinc-100" title={game.name}>
+        <h3 className="truncate text-sm font-semibold text-slate-100" title={game.name}>
           {game.name}
         </h3>
 
@@ -648,7 +676,7 @@ function BacklogCard({ game }: { game: OwnedGame }) {
           href={`https://store.steampowered.com/app/${game.appid}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-4 inline-flex min-h-11 items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 px-3 text-sm font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+          className="mt-4 inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-3 text-sm font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400"
         >
           View on Steam
           <span className="sr-only"> (opens in a new tab): {game.name}</span>
@@ -671,17 +699,17 @@ export type ValueState =
 /** Exported so it can be rendered on its own in tests and previews. */
 export function ValueIndicator({ hours, state }: { hours: number; state: ValueState }) {
   const lengthNote = (
-    <p className="mt-1 text-xs text-zinc-500">
-      ~{hours}h length <span className="text-zinc-600">(simulated)</span>
+    <p className="mt-1 text-xs text-slate-500">
+      ~{hours}h length <span className="text-slate-600">(simulated)</span>
     </p>
   );
 
   if (state.kind === "loading") {
     return (
       <div aria-busy="true" aria-label="Loading price">
-        <div className="h-4 w-24 animate-pulse rounded bg-zinc-800" />
-        <div className="mt-2 h-1.5 w-full animate-pulse rounded-full bg-zinc-800" />
-        <div className="mt-2 h-3 w-32 animate-pulse rounded bg-zinc-800" />
+        <div className="h-4 w-24 animate-pulse rounded bg-slate-800" />
+        <div className="mt-2 h-1.5 w-full animate-pulse rounded-full bg-slate-800" />
+        <div className="mt-2 h-3 w-32 animate-pulse rounded bg-slate-800" />
       </div>
     );
   }
@@ -689,8 +717,8 @@ export function ValueIndicator({ hours, state }: { hours: number; state: ValueSt
   if (state.kind === "unavailable") {
     return (
       <div>
-        <p className="text-sm font-medium text-zinc-400">Price unavailable</p>
-        <ValueMeter level={0} bar="bg-zinc-700" />
+        <p className="text-sm font-medium text-slate-400">Price unavailable</p>
+        <ValueMeter level={0} bar="bg-slate-700" />
         {lengthNote}
       </div>
     );
@@ -699,8 +727,8 @@ export function ValueIndicator({ hours, state }: { hours: number; state: ValueSt
   if (state.kind === "free") {
     return (
       <div>
-        <p className="text-sm font-semibold text-emerald-300">Free to play</p>
-        <ValueMeter level={4} bar="bg-emerald-400" />
+        <p className="text-sm font-semibold text-steam-300">Free to play</p>
+        <ValueMeter level={4} bar="bg-steam-400" />
         {lengthNote}
       </div>
     );
@@ -715,19 +743,19 @@ export function ValueIndicator({ hours, state }: { hours: number; state: ValueSt
     <div>
       <div className="flex items-baseline justify-between gap-2">
         <p className={`text-sm font-semibold ${tone.text}`}>{rating.label}</p>
-        <p className="text-sm tabular-nums text-zinc-300">
+        <p className="text-sm tabular-nums text-slate-300">
           {formatMoney(perHour, price.currency)}
-          <span className="text-zinc-500">/hr</span>
+          <span className="text-slate-500">/hr</span>
         </p>
       </div>
       <ValueMeter level={rating.level} bar={tone.bar} />
-      <p className="mt-2 text-xs text-zinc-400">
+      <p className="mt-2 text-xs text-slate-400">
         Store price{" "}
-        <span className="font-medium tabular-nums text-zinc-200">
+        <span className="font-medium tabular-nums text-slate-200">
           {price.finalFormatted ?? formatMoney(price.final, price.currency)}
         </span>
         {price.discountPercent > 0 ? (
-          <span className="ml-1.5 rounded bg-emerald-400/15 px-1 py-0.5 text-[11px] font-semibold text-emerald-300">
+          <span className="ml-1.5 rounded bg-steam-400/15 px-1 py-0.5 text-[11px] font-semibold text-steam-300">
             -{price.discountPercent}%
           </span>
         ) : null}
@@ -744,21 +772,21 @@ export function ValueIndicator({ hours, state }: { hours: number; state: ValueSt
 function DashboardSkeleton() {
   return (
     <div aria-busy="true" aria-label="Loading your library" className="space-y-8">
-      <div className="rounded-3xl border border-zinc-800 bg-[#131316] p-5 sm:p-7">
-        <div className="h-3 w-24 animate-pulse rounded bg-zinc-800" />
-        <div className="mt-3 h-6 w-3/4 animate-pulse rounded bg-zinc-800" />
-        <div className="mt-4 h-2 w-full animate-pulse rounded-full bg-zinc-800" />
+      <div className="rounded-3xl border border-slate-800 bg-surface p-5 sm:p-7">
+        <div className="h-3 w-24 animate-pulse rounded bg-slate-800" />
+        <div className="mt-3 h-6 w-3/4 animate-pulse rounded bg-slate-800" />
+        <div className="mt-4 h-2 w-full animate-pulse rounded-full bg-slate-800" />
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <div className="h-24 animate-pulse rounded-2xl bg-zinc-900" />
-          <div className="h-24 animate-pulse rounded-2xl bg-zinc-900" />
-          <div className="col-span-2 h-24 animate-pulse rounded-2xl bg-zinc-900 sm:col-span-1" />
+          <div className="h-24 animate-pulse rounded-2xl bg-slate-900" />
+          <div className="h-24 animate-pulse rounded-2xl bg-slate-900" />
+          <div className="col-span-2 h-24 animate-pulse rounded-2xl bg-slate-900 sm:col-span-1" />
         </div>
       </div>
       <div>
-        <div className="h-5 w-48 animate-pulse rounded bg-zinc-800" />
+        <div className="h-5 w-48 animate-pulse rounded bg-slate-800" />
         <div className="-mx-4 mt-4 flex gap-3 overflow-hidden px-4">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="h-72 w-[17rem] shrink-0 animate-pulse rounded-2xl bg-zinc-900" />
+            <div key={i} className="h-72 w-[17rem] shrink-0 animate-pulse rounded-2xl bg-slate-900" />
           ))}
         </div>
       </div>
@@ -789,8 +817,8 @@ function PrivateLibraryState({ onRetry, retrying }: { onRetry: () => void; retry
     >
       <p>
         Steam is not sharing your library with us. In your Steam privacy settings, set{" "}
-        <strong className="font-medium text-zinc-200">Game details</strong> to{" "}
-        <strong className="font-medium text-zinc-200">Public</strong>.
+        <strong className="font-medium text-slate-200">Game details</strong> to{" "}
+        <strong className="font-medium text-slate-200">Public</strong>.
       </p>
       <p className="mt-2">
         We remember a private answer for up to 30 minutes, so the change can take that long to

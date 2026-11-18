@@ -69,6 +69,7 @@ export interface TtlPolicy {
  * | appStoreMeta         | 24 h   | 14 d  | GetItems: developers, publishers, tags  |
  * | steamTags            | 7 d    | 30 d  | IStoreService/GetTagList                |
  * | itadAppPrices        | 1 h    | 24 h  | ITAD lookup + prices at every store     |
+ * | storeSearch          | 24 h   | 7 d   | Storefront storesearch + GetItems       |
  */
 export const TTL = {
   playerSummary:      { freshSeconds: 5 * MINUTE,  staleSeconds: 24 * HOUR, upstream: "webapi", scope: "player" },
@@ -96,6 +97,8 @@ export const TTL = {
   appStoreMeta:       { freshSeconds: 24 * HOUR,   staleSeconds: 14 * DAY,  upstream: "webapi", scope: "global" },
   steamTags:          { freshSeconds: 7 * DAY,     staleSeconds: 30 * DAY,  upstream: "webapi", scope: "global" },
   itadAppPrices:      { freshSeconds: 1 * HOUR,    staleSeconds: 24 * HOUR, upstream: "itad",   scope: "global" },
+  // Global search: one entry per normalised query, shared by every user.
+  storeSearch:        { freshSeconds: 24 * HOUR,   staleSeconds: 7 * DAY,   upstream: "store",  scope: "global" },
 } as const satisfies Record<string, TtlPolicy>;
 
 export type SteamResource = keyof typeof TTL;
@@ -197,7 +200,10 @@ export const cacheKey = {
   currentPlayers: (appid: number) => `app:${appid}:players`,
   appStoreMeta: (appid: number, cc: string) => `app:${appid}:store-meta:${cc.toLowerCase()}`,
   steamTags: (language: string) => `store:tags:${language}`,
-  itadAppPrices: (appid: number, cc: string) => `app:${appid}:itad-prices:${cc.toLowerCase()}`,
+  // "v2": each store now carries its link (`url`).
+  itadAppPrices: (appid: number, cc: string) => `app:${appid}:itad-prices:v2:${cc.toLowerCase()}`,
+  // The term is already normalised (lib/title-search.ts): lowercase a-z 0-9 and spaces.
+  storeSearch: (cc: string, term: string) => `search:${cc.toLowerCase()}:${term}`,
 } as const satisfies Record<SteamResource, (...args: never[]) => string>;
 
 /** Short, stable, non-cryptographic hash for cache keys (FNV-1a, 32-bit). */

@@ -22,11 +22,16 @@ import { useState, type KeyboardEvent, type PointerEvent } from "react";
 import { formatMoney } from "@/components/ui-kit";
 import type { PriceHistory, PricePoint } from "@/lib/price-history";
 
-/** Series colour, checked for contrast against the #18181c card surface. */
-const SERIES_COLOR = "#3987e5";
+/**
+ * Series colour: a Steam blue between steam-500 and steam-600. The brighter
+ * steam-400 (#66c0f4) is too light for a data mark on this dark card (OKLCH L
+ * 0.77, above the 0.48-0.67 band); #3a9ad6 passes the lightness, contrast and
+ * colour-blind separation checks against the green low marker and #141922.
+ */
+const SERIES_COLOR = "#3a9ad6";
 /** Reserved "good" status colour. Only ever used with a text label beside it. */
 const LOW_COLOR = "#0ca30c";
-const SURFACE_COLOR = "#18181c";
+const SURFACE_COLOR = "#141922";
 
 /**
  * Time ranges. All four buttons are always shown; "All" is the default, so a
@@ -63,7 +68,7 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
 
   if (points.length === 0) {
     return (
-      <p className="rounded-xl border border-zinc-800 px-3 py-4 text-center text-xs text-zinc-500">
+      <p className="rounded-xl border border-slate-800 px-3 py-4 text-center text-xs text-slate-500">
         No price recorded yet. The chart fills in as prices are checked.
       </p>
     );
@@ -140,7 +145,7 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
         {/* Y labels: just the range. A tick on every gridline would be noise. */}
         <div
           aria-hidden="true"
-          className="flex w-12 shrink-0 flex-col justify-between py-0.5 text-right text-[10px] tabular-nums leading-none text-zinc-500"
+          className="flex w-12 shrink-0 flex-col justify-between py-0.5 text-right text-[10px] tabular-nums leading-none text-slate-500"
         >
           <span>{formatMoney(hi, currency)}</span>
           {hi !== lo ? <span>{formatMoney(lo, currency)}</span> : null}
@@ -156,7 +161,7 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
           onFocus={() => setActive((current) => current ?? points.length - 1)}
           onBlur={() => setActive(null)}
           onKeyDown={onKeyDown}
-          className="relative h-28 min-w-0 flex-1 cursor-crosshair touch-pan-y rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+          className="relative h-28 min-w-0 flex-1 cursor-crosshair touch-pan-y rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400"
         >
           <svg
             aria-hidden="true"
@@ -172,7 +177,7 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
                 x2="100"
                 y1={y}
                 y2={y}
-                stroke="#27272a"
+                stroke="#263241"
                 strokeWidth="1"
                 vectorEffect="non-scaling-stroke"
               />
@@ -192,7 +197,7 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
           {activePoint ? (
             <div
               aria-hidden="true"
-              className="pointer-events-none absolute inset-y-0 w-px bg-zinc-500"
+              className="pointer-events-none absolute inset-y-0 w-px bg-slate-500"
               style={{ left: `${xOf(toMs(activePoint.date))}%` }}
             />
           ) : null}
@@ -207,7 +212,7 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
                   where a label underneath would run into the "Today" axis label. */}
               <span
                 aria-hidden="true"
-                className={`pointer-events-none absolute rounded-sm bg-[#18181c] px-0.5 text-[10px] font-medium leading-none text-zinc-300 ${
+                className={`pointer-events-none absolute rounded-sm bg-surface-raised px-0.5 text-[10px] font-medium leading-none text-slate-300 ${
                   lowAtRightEdge ? "-translate-x-full -translate-y-1/2" : "-translate-x-1/2"
                 }`}
                 style={
@@ -236,7 +241,7 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
                 // Above the point, or below it when the point is near the top,
                 // so the readout stays inside the chart instead of covering
                 // the text above it.
-                className={`pointer-events-none absolute z-10 -translate-x-1/2 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs shadow-lg ${
+                className={`pointer-events-none absolute z-10 -translate-x-1/2 whitespace-nowrap rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs shadow-lg ${
                   yOf(activePoint.final) < 45 ? "" : "-translate-y-full"
                 }`}
                 style={{
@@ -253,16 +258,16 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
                     className="h-0.5 w-3 rounded-full"
                     style={{ backgroundColor: SERIES_COLOR }}
                   />
-                  <span className="font-semibold tabular-nums text-zinc-50">
+                  <span className="font-semibold tabular-nums text-slate-50">
                     {formatMoney(activePoint.final, currency)}
                   </span>
                   {activePoint.discountPercent > 0 ? (
-                    <span className="tabular-nums text-zinc-400">
+                    <span className="tabular-nums text-slate-400">
                       -{activePoint.discountPercent}%
                     </span>
                   ) : null}
                 </span>
-                <span className="mt-0.5 block text-zinc-400">
+                <span className="mt-0.5 block text-slate-400">
                   {formatDay(activePoint.date, now)}
                 </span>
               </div>
@@ -274,7 +279,7 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
       {/* X labels */}
       <div
         aria-hidden="true"
-        className="ml-14 mt-1.5 flex justify-between text-[10px] leading-none text-zinc-500"
+        className="ml-14 mt-1.5 flex justify-between text-[10px] leading-none text-slate-500"
       >
         <span>{formatDay(first.date, now)}</span>
         {xEnd - xStart > 400 * DAY_MS ? (
@@ -297,30 +302,30 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
                 setRangeId(r.id);
                 setActive(null);
               }}
-              className={`min-h-8 rounded-md px-2.5 text-xs font-medium tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent ${
+              className={`min-h-8 rounded-md px-2.5 text-xs font-medium tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400 disabled:cursor-not-allowed disabled:text-slate-700 disabled:hover:bg-transparent ${
                 r.id === range.id
-                  ? "bg-zinc-700 text-zinc-50"
-                  : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+                  ? "bg-slate-700 text-slate-50"
+                  : "text-slate-500 hover:bg-slate-800 hover:text-slate-300"
               }`}
             >
               {r.label}
             </button>
           );
         })}
-        <span className="ml-1 text-[11px] text-zinc-600">
+        <span className="ml-1 text-[11px] text-slate-600">
           {range.days === null ? `Since ${formatDay(first.date, now)}` : null}
         </span>
       </div>
 
       {/* Table view: every value in the chart, without hovering. */}
-      <details className="mt-2 text-xs text-zinc-400">
-        <summary className="inline-flex min-h-11 cursor-pointer items-center rounded-md text-zinc-500 hover:text-zinc-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
+      <details className="mt-2 text-xs text-slate-400">
+        <summary className="inline-flex min-h-11 cursor-pointer items-center rounded-md text-slate-500 hover:text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400">
           Show price changes as a table
         </summary>
         <table className="mt-1 w-full border-collapse text-left tabular-nums">
           <caption className="sr-only">{summary}</caption>
           <thead>
-            <tr className="border-b border-zinc-800 text-zinc-500">
+            <tr className="border-b border-slate-800 text-slate-500">
               <th scope="col" className="py-1.5 pr-3 font-medium">
                 Date
               </th>
@@ -334,9 +339,9 @@ export function PriceHistoryChart({ history, now = new Date() }: PriceHistoryCha
           </thead>
           <tbody>
             {priceChanges(points).map((p) => (
-              <tr key={p.date} className="border-b border-zinc-800/60">
+              <tr key={p.date} className="border-b border-slate-800/60">
                 <td className="py-1.5 pr-3">{formatDay(p.date, now)}</td>
-                <td className="py-1.5 pr-3 text-zinc-200">{formatMoney(p.final, currency)}</td>
+                <td className="py-1.5 pr-3 text-slate-200">{formatMoney(p.final, currency)}</td>
                 <td className="py-1.5">{p.discountPercent > 0 ? `-${p.discountPercent}%` : "None"}</td>
               </tr>
             ))}

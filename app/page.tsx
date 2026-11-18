@@ -19,7 +19,7 @@ export const metadata: Metadata = {
   description: "See your Steam library, backlog, deals and price drops at a glance.",
 };
 
-export const viewport: Viewport = { colorScheme: "dark", themeColor: "#09090b" };
+export const viewport: Viewport = { colorScheme: "dark", themeColor: "#0b0e14" };
 
 // Depends on a cookie: never prerender or cache this page.
 export const dynamic = "force-dynamic";
@@ -52,15 +52,15 @@ export default async function LandingPage({
     : null;
 
   return (
-    <div className="flex min-h-dvh flex-col bg-zinc-950 text-zinc-100 antialiased">
+    <div className="flex min-h-dvh flex-col bg-page text-slate-100 antialiased">
       <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-12">
-        <p className="text-2xl font-semibold tracking-tight text-zinc-50">
-          Steam<span className="text-emerald-400">Gauge</span>
+        <p className="text-2xl font-semibold tracking-tight text-slate-50">
+          Steam<span className="text-steam-400">Gauge</span>
         </p>
-        <h1 className="mt-6 text-3xl font-semibold leading-tight tracking-tight text-zinc-50">
+        <h1 className="mt-6 text-3xl font-semibold leading-tight tracking-tight text-slate-50">
           Your Steam library, at a glance.
         </h1>
-        <p className="mt-3 text-base leading-relaxed text-zinc-400">
+        <p className="mt-3 text-base leading-relaxed text-slate-400">
           See what you own and what you have never played, find deals worth the money, and
           watch games for a price drop.
         </p>
@@ -78,22 +78,22 @@ export default async function LandingPage({
             and replace the sign-in state cookie mid-flow. */}
         <a
           href="/api/auth/steam/login"
-          className="mt-6 inline-flex min-h-12 items-center justify-center rounded-xl bg-emerald-400 px-5 text-base font-semibold text-zinc-950 transition-colors hover:bg-emerald-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200"
+          className="mt-6 inline-flex min-h-12 items-center justify-center rounded-xl bg-steam-400 px-5 text-base font-semibold text-slate-950 transition-colors hover:bg-steam-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-200"
         >
           Sign in through Steam
         </a>
-        <p className="mt-3 text-sm leading-relaxed text-zinc-500">
+        <p className="mt-3 text-sm leading-relaxed text-slate-500">
           You sign in on Steam&rsquo;s own site. SteamGauge never sees your password.
         </p>
       </main>
 
-      <footer className="px-4 pb-6 text-center text-xs leading-relaxed text-zinc-600">
+      <footer className="px-4 pb-6 text-center text-xs leading-relaxed text-slate-600">
         SteamGauge is not affiliated with Valve.{" "}
         <a
           href="https://steampowered.com"
           target="_blank"
           rel="noopener noreferrer"
-          className="underline decoration-zinc-700 underline-offset-2 hover:text-zinc-400"
+          className="underline decoration-slate-700 underline-offset-2 hover:text-slate-400"
         >
           Powered by Steam
         </a>

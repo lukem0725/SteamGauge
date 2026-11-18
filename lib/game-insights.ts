@@ -71,6 +71,24 @@ export interface GameInsights {
 
 const MAX_DESCRIPTORS = 12;
 
+/**
+ * Trimmed, non-empty, first occurrence only (case-insensitive). Steam can list
+ * one descriptor under several category ids, e.g. "DualSense Controller
+ * Support" twice.
+ */
+function unique(items: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of items) {
+    const item = raw.trim();
+    const key = item.toLowerCase();
+    if (!item || seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
 export async function buildGameInsights(
   appid: number | string,
   mode: InsightsMode,
@@ -118,15 +136,17 @@ export async function buildGameInsights(
       appid: id,
       name: app?.name ?? null,
       storeUrl: `https://store.steampowered.com/app/${id}/`,
-      developers: metaData?.developers.length ? metaData.developers : (app?.developers ?? []),
-      publishers: metaData?.publishers.length ? metaData.publishers : (app?.publishers ?? []),
-      franchises: metaData?.franchises ?? [],
-      genres: app?.genres ?? [],
-      descriptors: (app?.categories ?? []).slice(0, MAX_DESCRIPTORS),
-      tags: (metaData?.tagids ?? []).flatMap((tagid) => {
-        const name = tagNames[String(tagid)];
-        return name ? [name] : [];
-      }),
+      developers: unique(metaData?.developers.length ? metaData.developers : (app?.developers ?? [])),
+      publishers: unique(metaData?.publishers.length ? metaData.publishers : (app?.publishers ?? [])),
+      franchises: unique(metaData?.franchises ?? []),
+      genres: unique(app?.genres ?? []),
+      descriptors: unique(app?.categories ?? []).slice(0, MAX_DESCRIPTORS),
+      tags: unique(
+        (metaData?.tagids ?? []).flatMap((tagid) => {
+          const name = tagNames[String(tagid)];
+          return name ? [name] : [];
+        }),
+      ),
       players:
         playerData && players.status === "fulfilled"
           ? { count: playerData.count, asOf: players.value.meta.fetchedAt }

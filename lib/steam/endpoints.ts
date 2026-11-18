@@ -40,6 +40,7 @@ import {
   type SteamTagList,
 } from "./insights";
 import type { ItadAppPriceData } from "./composites";
+import type { SteamSearchData } from "./search";
 import { parseStoreSpecials } from "./specials";
 import type {
   DealsPageData,
@@ -923,6 +924,33 @@ export async function getItadAppPrices(
     resource: "itadAppPrices",
     keyArgs: [id, cc],
     validate: compositeResult<ItadAppPriceData>,
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+// =============================================================================
+// Global search (Steam store search + store data)
+// =============================================================================
+
+export type { SteamSearchData, SteamSearchHit } from "./search";
+
+/**
+ * Steam's store search for an already normalised term (lib/title-search.ts),
+ * with capsule art, release year and price. Shared by all users for a day.
+ */
+export async function getStoreSearch(
+  normalizedTerm: string,
+  countryCode: string = DEFAULT_COUNTRY_CODE,
+  context: EndpointContext = {},
+): Promise<CachedResult<SteamSearchData>> {
+  if (!/^[a-z0-9 ]{2,64}$/.test(normalizedTerm)) throw new RangeError("search term must be normalised");
+  const cc = countryCodeSchema.parse(countryCode);
+  return cachedFetch({
+    resource: "storeSearch",
+    keyArgs: [cc, normalizedTerm],
+    validate: compositeResult<SteamSearchData>,
     session: context.session,
     waitUntil: context.waitUntil,
     priority: context.priority,

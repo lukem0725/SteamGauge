@@ -1,5 +1,40 @@
 @import "tailwindcss";
 
+/*
+ * SteamGauge theme (Tailwind 4 reads its configuration from CSS; there is no
+ * tailwind.config.js). Each token becomes utilities: --color-page gives
+ * bg-page, --color-steam-400 gives bg-steam-400 / text-steam-400, and so on.
+ *
+ *   page      Steam's dark navy, the outer background of every page.
+ *   chrome    Near black, for the top bar and phone tab bar.
+ *   surface   Near black, for cards and panels on the navy page.
+ *   surface-raised  A step lighter, for cards inside cards and table rows.
+ *   steam-*   The accent: Steam's light blue (#66c0f4) at 400, Steam's
+ *             #417a9b at 700 and #2a475e at 800. Used for buttons, active
+ *             tabs, links, badges and focus rings.
+ *
+ * Grays are Tailwind's slate (cool, blue-tinted) so text and borders sit
+ * naturally on the navy page.
+ */
+@theme {
+  --color-page: #171d25;
+  --color-chrome: #0b0e14;
+  --color-surface: #0f1219;
+  --color-surface-raised: #141922;
+
+  --color-steam-50: #eef8fe;
+  --color-steam-100: #d6eefc;
+  --color-steam-200: #b0dff9;
+  --color-steam-300: #88cff6;
+  --color-steam-400: #66c0f4;
+  --color-steam-500: #47a9e3;
+  --color-steam-600: #2f8cc4;
+  --color-steam-700: #417a9b;
+  --color-steam-800: #2a475e;
+  --color-steam-900: #1b2838;
+  --color-steam-950: #121a24;
+}
+
 /* The app is dark only. This also darkens scrollbars and form controls. */
 :root {
   color-scheme: dark;

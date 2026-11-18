@@ -3,46 +3,17 @@
 /**
  * components/ui-kit.tsx
  *
- * Pieces shared by every signed-in view (dashboard, deals): the query
- * provider, the Data Age ticker, the value meter, and the loading-failure
- * panels. Dark theme throughout: zinc-950 page, charcoal cards.
+ * Pieces shared by every signed-in view (dashboard, deals): the Data Age
+ * ticker, the value meter, and the loading-failure
+ * panels. Dark theme throughout: slate-950 page, charcoal cards.
  */
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
-import { ApiError, retryDelay, shouldRetry } from "@/lib/api/client";
+import { ApiError } from "@/lib/api/client";
 import type { CacheMeta } from "@/lib/steam/cached-fetch";
 import type { ValueLevel } from "@/lib/value";
 
 export const SIGN_IN_PATH = "/api/auth/steam/login";
-
-// =============================================================================
-// Query provider
-// =============================================================================
-
-/**
- * One QueryClient, with our defaults, for every signed-in page. Rendered once
- * by app/(app)/layout.tsx, so data loaded on one page is still there when the
- * user navigates to another, and an action on one page (watching a game from
- * Deals) can refresh another's data (the Wishlist).
- */
-export function AppQueryProvider({ children }: { children: ReactNode }) {
-  const [queryClient] = useState(
-    () =>
-      new QueryClient({
-        defaultOptions: {
-          queries: {
-            // Steam data does not change because a tab regained focus (doc 4.1).
-            refetchOnWindowFocus: false,
-            refetchOnReconnect: false,
-            retry: shouldRetry,
-            retryDelay,
-          },
-        },
-      }),
-  );
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
-}
 
 // =============================================================================
 // Value rating colours
@@ -50,7 +21,7 @@ export function AppQueryProvider({ children }: { children: ReactNode }) {
 
 /** Tailwind classes for each value level. 4 is best. */
 export const VALUE_TONE: Readonly<Record<ValueLevel, { text: string; bar: string }>> = {
-  4: { text: "text-emerald-300", bar: "bg-emerald-400" },
+  4: { text: "text-steam-300", bar: "bg-steam-400" },
   3: { text: "text-lime-300", bar: "bg-lime-400" },
   2: { text: "text-amber-300", bar: "bg-amber-400" },
   1: { text: "text-rose-300", bar: "bg-rose-400" },
@@ -90,7 +61,7 @@ export function DataAgeTicker({ meta, isFetching }: { meta: CacheMeta | null; is
 
   return (
     <TickerShell
-      tone={updating ? "amber" : meta.source === "steam" ? "emerald" : "muted"}
+      tone={updating ? "amber" : meta.source === "steam" ? "steam" : "muted"}
       pulse={updating}
       title={`Fetched from Steam at ${new Date(meta.fetchedAt).toLocaleString()}`}
     >
@@ -106,19 +77,19 @@ function TickerShell({
   title,
   children,
 }: {
-  tone: "emerald" | "amber" | "muted";
+  tone: "steam" | "amber" | "muted";
   pulse: boolean;
   title?: string;
   children: ReactNode;
 }) {
   const dot =
-    tone === "emerald" ? "bg-emerald-400" : tone === "amber" ? "bg-amber-400" : "bg-zinc-500";
+    tone === "steam" ? "bg-steam-400" : tone === "amber" ? "bg-amber-400" : "bg-slate-500";
   return (
     <p
       role="status"
       aria-live="polite"
       title={title}
-      className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium leading-none text-zinc-400"
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-slate-800 bg-slate-900 px-2.5 py-1 text-[11px] font-medium leading-none text-slate-400"
     >
       <span
         aria-hidden="true"
@@ -153,7 +124,7 @@ export function ValueMeter({ level, bar }: { level: 0 | 1 | 2 | 3 | 4; bar: stri
       {[1, 2, 3, 4].map((segment) => (
         <span
           key={segment}
-          className={`h-1.5 flex-1 rounded-full ${segment <= level ? bar : "bg-zinc-800"}`}
+          className={`h-1.5 flex-1 rounded-full ${segment <= level ? bar : "bg-slate-800"}`}
         />
       ))}
     </div>
@@ -176,11 +147,11 @@ export function StatePanel({
       ? "border-amber-400/30"
       : tone === "rose"
         ? "border-rose-400/30"
-        : "border-zinc-800";
+        : "border-slate-800";
   return (
-    <section className={`rounded-3xl border ${border} bg-[#131316] p-6 text-center sm:p-10`}>
-      <h2 className="text-lg font-semibold text-zinc-50">{title}</h2>
-      <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-zinc-400">{children}</div>
+    <section className={`rounded-3xl border ${border} bg-surface p-6 text-center sm:p-10`}>
+      <h2 className="text-lg font-semibold text-slate-50">{title}</h2>
+      <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-slate-400">{children}</div>
       {actions ? (
         <div className="mt-6 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
           {actions}
@@ -191,10 +162,10 @@ export function StatePanel({
 }
 
 export const primaryButton =
-  "inline-flex min-h-11 items-center justify-center rounded-xl bg-emerald-400 px-4 text-sm font-semibold text-zinc-950 transition-colors hover:bg-emerald-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 disabled:cursor-not-allowed disabled:opacity-60";
+  "inline-flex min-h-11 items-center justify-center rounded-xl bg-steam-400 px-4 text-sm font-semibold text-slate-950 transition-colors hover:bg-steam-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-200 disabled:cursor-not-allowed disabled:opacity-60";
 
 export const secondaryButton =
-  "inline-flex min-h-11 items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 px-4 text-sm font-medium text-zinc-200 transition-colors hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:cursor-not-allowed disabled:opacity-60";
+  "inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400 disabled:cursor-not-allowed disabled:opacity-60";
 
 export function ErrorState({
   error,

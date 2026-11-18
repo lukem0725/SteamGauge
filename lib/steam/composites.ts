@@ -423,6 +423,11 @@ export interface ItadStorePrice {
   readonly cut: number;
   /** Lowest price ever recorded at that store, in cents. */
   readonly storeLow: number | null;
+  /**
+   * Link to this game's page at that store, as ITAD gives it (usually an ITAD
+   * redirect that may carry an affiliate tag). https only; null if absent.
+   */
+  readonly url: string | null;
 }
 
 export interface ItadAppPriceData {
@@ -457,7 +462,19 @@ const itadStoreDealSchema = z.object({
   regular: optionalItadPrice,
   cut: z.number().int().min(0).max(100).optional().catch(0),
   storeLow: optionalItadPrice,
+  url: z.string().max(2048).optional().catch(undefined),
 });
+
+/** Only absolute https links leave our pages; anything else is dropped. */
+export function safeStoreUrl(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && !url.username && !url.password ? url.href : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Two ITAD calls: Steam AppID -> ITAD id, then that game's prices everywhere. */
 export async function fetchItadAppPrices(
@@ -492,6 +509,7 @@ export async function fetchItadAppPrices(
       regular: deal.regular?.cents ?? deal.price.cents,
       cut: deal.cut ?? 0,
       storeLow: deal.storeLow?.cents ?? null,
+      url: deal.shop.id === ITAD_STEAM_SHOP_ID ? `https://store.steampowered.com/app/${appid}/` : safeStoreUrl(deal.url),
     });
   }
   const stores = [...byShop.values()].sort((a, b) => a.price - b.price).slice(0, 20);

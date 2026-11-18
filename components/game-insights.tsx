@@ -73,11 +73,11 @@ export function PriceHistoryPanel({ appid, eager = false }: { appid: number; eag
       <SectionHeading>Price history</SectionHeading>
       {!enabled || history.isPending ? (
         <div aria-busy="true" aria-label="Loading price history" className="mt-2">
-          <div className="h-4 w-48 animate-pulse rounded bg-zinc-800" />
-          <div className="mt-3 h-28 animate-pulse rounded-md bg-zinc-800/60" />
+          <div className="h-4 w-48 animate-pulse rounded bg-slate-800" />
+          <div className="mt-3 h-28 animate-pulse rounded-md bg-slate-800/60" />
         </div>
       ) : !data ? (
-        <p className="mt-2 text-sm text-zinc-500">Price history could not be loaded.</p>
+        <p className="mt-2 text-sm text-slate-500">Price history could not be loaded.</p>
       ) : (
         <>
           <LowStatusLine history={data} />
@@ -105,7 +105,7 @@ export function LowStatusLine({ history }: { history: PriceHistory }) {
 
   if (history.lowStatus === "at_low" && history.lowest) {
     return (
-      <p className="mt-2 flex items-start gap-2 text-sm text-zinc-200">
+      <p className="mt-2 flex items-start gap-2 text-sm text-slate-200">
         <svg aria-hidden="true" viewBox="0 0 20 20" fill="#0ca30c" className="mt-0.5 h-4 w-4 shrink-0">
           <path
             fillRule="evenodd"
@@ -114,10 +114,10 @@ export function LowStatusLine({ history }: { history: PriceHistory }) {
           />
         </svg>
         <span>
-          <strong className="font-semibold text-zinc-50">
+          <strong className="font-semibold text-slate-50">
             {itad ? "Lowest Steam price on record." : "Lowest price we have recorded."}
           </strong>{" "}
-          <span className="text-zinc-400">
+          <span className="text-slate-400">
             {itad
               ? `History since ${since ?? "the first record"}.`
               : `${history.observedDays} days tracked${since ? `, since ${since}` : ""}.`}
@@ -130,11 +130,11 @@ export function LowStatusLine({ history }: { history: PriceHistory }) {
   if (history.lowStatus === "above_low" && history.lowest && history.currentFinal !== null) {
     const above = history.currentFinal - history.lowest.final;
     return (
-      <p className="mt-2 text-sm text-zinc-300">
-        <strong className="font-semibold text-zinc-100">
+      <p className="mt-2 text-sm text-slate-300">
+        <strong className="font-semibold text-slate-100">
           {itad ? "Not the lowest on record." : "Not the lowest we have recorded."}
         </strong>{" "}
-        <span className="text-zinc-400">
+        <span className="text-slate-400">
           It was {formatMoney(history.lowest.final, currency)} on {formatDay(history.lowest.date)},{" "}
           {formatMoney(above, currency)} less than now.
         </span>
@@ -144,16 +144,16 @@ export function LowStatusLine({ history }: { history: PriceHistory }) {
 
   if (history.lowStatus === "insufficient_history") {
     return itad ? (
-      <p className="mt-2 text-sm text-zinc-400">No price history found for this game yet.</p>
+      <p className="mt-2 text-sm text-slate-400">No price history found for this game yet.</p>
     ) : (
-      <p className="mt-2 text-sm text-zinc-400">
+      <p className="mt-2 text-sm text-slate-400">
         {since ? `Tracking since ${since}. ` : "Tracking has just started. "}
         {history.observedDays} of {DAYS_NEEDED_FOR_LOW} days recorded before we can call a low.
       </p>
     );
   }
 
-  return <p className="mt-2 text-sm text-zinc-400">This game has no price to compare right now.</p>;
+  return <p className="mt-2 text-sm text-slate-400">This game has no price to compare right now.</p>;
 }
 
 // =============================================================================
@@ -172,6 +172,7 @@ export function GameFactsPanel({
   eager = false,
   insights,
   maxTags,
+  maxFeatures,
   showFeatures = true,
 }: {
   appid: number;
@@ -181,6 +182,8 @@ export function GameFactsPanel({
   insights?: ReturnType<typeof useGameInsights>;
   /** Show at most this many tags (most voted first). Default: all. */
   maxTags?: number;
+  /** Show at most this many features. Default: all. */
+  maxFeatures?: number;
   /** Show Steam's descriptors ("Single-player", ...). Default true. */
   showFeatures?: boolean;
 }) {
@@ -194,14 +197,14 @@ export function GameFactsPanel({
       <SectionHeading>About this game</SectionHeading>
       {query.isPending ? (
         <div aria-busy="true" aria-label="Loading game details" className="mt-2 space-y-2">
-          <div className="h-4 w-40 animate-pulse rounded bg-zinc-800" />
-          <div className="h-4 w-64 animate-pulse rounded bg-zinc-800" />
-          <div className="h-6 w-full animate-pulse rounded bg-zinc-800/60" />
+          <div className="h-4 w-40 animate-pulse rounded bg-slate-800" />
+          <div className="h-4 w-64 animate-pulse rounded bg-slate-800" />
+          <div className="h-6 w-full animate-pulse rounded bg-slate-800/60" />
         </div>
       ) : !data ? (
-        <p className="mt-2 text-sm text-zinc-500">Game details could not be loaded.</p>
+        <p className="mt-2 text-sm text-slate-500">Game details could not be loaded.</p>
       ) : (
-        <GameFacts data={data} maxTags={maxTags} showFeatures={showFeatures} />
+        <GameFacts data={data} maxTags={maxTags} maxFeatures={maxFeatures} showFeatures={showFeatures} />
       )}
     </div>
   );
@@ -210,13 +213,17 @@ export function GameFactsPanel({
 export function GameFacts({
   data,
   maxTags,
+  maxFeatures,
   showFeatures = true,
 }: {
   data: GameInsights;
   maxTags?: number;
+  maxFeatures?: number;
   showFeatures?: boolean;
 }) {
-  const tags = maxTags === undefined ? data.tags : data.tags.slice(0, Math.max(0, maxTags));
+  // Deduplicate before limiting, so a repeated name never uses up a slot.
+  const tags = limit(uniqueItems(data.tags), maxTags);
+  const features = limit(uniqueItems(data.descriptors), maxFeatures);
   const rows: { label: string; value: string }[] = [
     { label: data.developers.length > 1 ? "Developers" : "Developer", value: data.developers.join(", ") },
     { label: data.publishers.length > 1 ? "Publishers" : "Publisher", value: data.publishers.join(", ") },
@@ -231,19 +238,19 @@ export function GameFacts({
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
           {rows.map((row) => (
             <div key={row.label} className="contents">
-              <dt className="text-zinc-500">{row.label}</dt>
-              <dd className="min-w-0 break-words text-zinc-200">{row.value}</dd>
+              <dt className="text-slate-500">{row.label}</dt>
+              <dd className="min-w-0 break-words text-slate-200">{row.value}</dd>
             </div>
           ))}
         </dl>
       ) : null}
 
       <TagRow label="Genres" items={data.genres} tone="sky" />
-      <TagRow label="Tags" items={tags} tone="zinc" />
-      {showFeatures ? <TagRow label="Features" items={data.descriptors} tone="outline" /> : null}
+      <TagRow label="Tags" items={tags} tone="slate" />
+      {showFeatures ? <TagRow label="Features" items={features} tone="outline" /> : null}
 
       {rows.length === 0 && data.genres.length === 0 && tags.length === 0 ? (
-        <p className="text-zinc-500">Steam lists no developer, publisher or tags for this game.</p>
+        <p className="text-slate-500">Steam lists no developer, publisher or tags for this game.</p>
       ) : null}
     </div>
   );
@@ -258,7 +265,7 @@ function PlayersNow({
 }) {
   if (!players) {
     return (
-      <p className="text-zinc-500">
+      <p className="text-slate-500">
         {unavailable ? "Live player count unavailable right now." : "Steam reports no live player count for this game."}
       </p>
     );
@@ -267,17 +274,26 @@ function PlayersNow({
   return (
     <p className="flex flex-wrap items-baseline gap-x-2">
       <span className="inline-flex items-center gap-1.5">
-        <span aria-hidden="true" className="h-2 w-2 rounded-full bg-emerald-400" />
-        <span className="text-lg font-semibold tabular-nums text-zinc-50">
+        <span aria-hidden="true" className="h-2 w-2 rounded-full bg-steam-400" />
+        <span className="text-lg font-semibold tabular-nums text-slate-50">
           {players.count.toLocaleString("en-US")}
         </span>
-        <span className="text-zinc-300">playing now</span>
+        <span className="text-slate-300">playing now</span>
       </span>
-      <span className="text-xs text-zinc-500">
+      <span className="text-xs text-slate-500">
         Steam count, {Number.isFinite(minutes) && minutes > 0 ? `${minutes} min ago` : "just now"}
       </span>
     </p>
   );
+}
+
+/** First occurrence of each non-empty name. Steam can repeat a descriptor. */
+function uniqueItems(items: readonly string[]): string[] {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+}
+
+function limit<T>(items: readonly T[], max: number | undefined): T[] {
+  return max === undefined ? [...items] : items.slice(0, Math.max(0, max));
 }
 
 function TagRow({
@@ -287,20 +303,21 @@ function TagRow({
 }: {
   label: string;
   items: readonly string[];
-  tone: "sky" | "zinc" | "outline";
+  tone: "sky" | "slate" | "outline";
 }) {
-  if (items.length === 0) return null;
+  const list = uniqueItems(items);
+  if (list.length === 0) return null;
   const styles = {
     sky: "bg-sky-400/10 text-sky-200 ring-sky-400/30",
-    zinc: "bg-zinc-800/80 text-zinc-300 ring-zinc-700",
-    outline: "bg-transparent text-zinc-400 ring-zinc-700",
+    slate: "bg-slate-800/80 text-slate-300 ring-slate-700",
+    outline: "bg-transparent text-slate-400 ring-slate-700",
   }[tone];
   return (
     <div>
-      <p className="mb-1 text-xs text-zinc-500">{label}</p>
+      <p className="mb-1 text-xs text-slate-500">{label}</p>
       <ul className="flex flex-wrap gap-1.5" aria-label={label}>
-        {items.map((item) => (
-          <li key={item} className={`rounded-full px-2 py-0.5 text-xs ring-1 ${styles}`}>
+        {list.map((item, index) => (
+          <li key={`${item}-${index}`} className={`rounded-full px-2 py-0.5 text-xs ring-1 ${styles}`}>
             {item}
           </li>
         ))}
@@ -327,7 +344,7 @@ export function StorePriceList({
     return (
       <div>
         <SectionHeading>Price breakdown</SectionHeading>
-        <p className="mt-2 text-sm text-zinc-500">
+        <p className="mt-2 text-sm text-slate-500">
           {unavailable ? "Store prices could not be loaded right now." : "Store prices are not connected."}
         </p>
       </div>
@@ -345,9 +362,9 @@ export function StorePriceList({
       <SectionHeading>Price breakdown</SectionHeading>
       <dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
         {lows.map((low) => (
-          <div key={low.label} className="rounded-lg border border-zinc-800 px-2.5 py-2">
-            <dt className="text-[11px] leading-tight text-zinc-500">{low.label}</dt>
-            <dd className="mt-0.5 text-sm font-semibold tabular-nums text-zinc-100">
+          <div key={low.label} className="rounded-lg border border-slate-800 px-2.5 py-2">
+            <dt className="text-[11px] leading-tight text-slate-500">{low.label}</dt>
+            <dd className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
               {low.value === null ? "—" : formatMoney(low.value, currency)}
             </dd>
           </div>
@@ -355,9 +372,9 @@ export function StorePriceList({
       </dl>
       {data.stores.length > 0 ? (
         <table className="mt-3 w-full border-collapse text-left text-sm">
-          <caption className="sr-only">Current price at each store, cheapest first</caption>
+          <caption className="sr-only">Current price at each store, cheapest first. Store names link to the game at that store.</caption>
           <thead>
-            <tr className="border-b border-zinc-800 text-xs text-zinc-500">
+            <tr className="border-b border-slate-800 text-xs text-slate-500">
               <th scope="col" className="py-1.5 pr-2 font-medium">Store</th>
               <th scope="col" className="py-1.5 pr-2 text-right font-medium">Price</th>
               <th scope="col" className="py-1.5 pr-2 text-right font-medium">Cut</th>
@@ -368,19 +385,47 @@ export function StorePriceList({
             {data.stores.map((store) => {
               const cheaper = !store.isSteam && store.price < steamPrice;
               return (
-                <tr key={store.shop} className="border-b border-zinc-800/60 last:border-0">
-                  <td className="py-1.5 pr-2 text-zinc-200">
-                    {store.shop}
-                    {store.isSteam ? <span className="ml-1.5 text-xs text-zinc-500">(this deal)</span> : null}
-                    {cheaper ? <span className="ml-1.5 text-xs text-emerald-300">cheaper than Steam</span> : null}
+                <tr key={store.shop} className="border-b border-slate-800/60 last:border-0">
+                  <td className="py-1.5 pr-2 text-slate-200">
+                    {store.url ? (
+                      <a
+                        href={store.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded font-medium text-slate-100 underline decoration-slate-600 underline-offset-2 hover:text-white hover:decoration-steam-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400"
+                      >
+                        {store.shop}
+                        <ExternalIcon />
+                        <span className="sr-only"> (opens {store.shop} in a new tab)</span>
+                      </a>
+                    ) : (
+                      store.shop
+                    )}
+                    {store.isSteam ? <span className="ml-1.5 text-xs text-slate-500">(this deal)</span> : null}
+                    {cheaper ? <span className="ml-1.5 text-xs text-steam-300">cheaper than Steam</span> : null}
                   </td>
-                  <td className="py-1.5 pr-2 text-right font-medium tabular-nums text-zinc-100">
-                    {formatMoney(store.price, currency)}
+                  <td className="py-1.5 pr-2 text-right font-medium tabular-nums text-slate-100">
+                    {store.url ? (
+                      // Same destination as the store name; out of the tab order
+                      // and hidden from screen readers so it is not announced twice.
+                      <a
+                        href={store.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        className="hover:text-white hover:underline"
+                      >
+                        {formatMoney(store.price, currency)}
+                      </a>
+                    ) : (
+                      formatMoney(store.price, currency)
+                    )}
                   </td>
-                  <td className="py-1.5 pr-2 text-right tabular-nums text-zinc-400">
+                  <td className="py-1.5 pr-2 text-right tabular-nums text-slate-400">
                     {store.cut > 0 ? `-${store.cut}%` : "—"}
                   </td>
-                  <td className="py-1.5 text-right tabular-nums text-zinc-400">
+                  <td className="py-1.5 text-right tabular-nums text-slate-400">
                     {store.storeLow === null ? "—" : formatMoney(store.storeLow, currency)}
                   </td>
                 </tr>
@@ -389,12 +434,20 @@ export function StorePriceList({
           </tbody>
         </table>
       ) : (
-        <p className="mt-2 text-sm text-zinc-500">No current prices at other stores.</p>
+        <p className="mt-2 text-sm text-slate-500">No current prices at other stores.</p>
       )}
     </div>
   );
 }
 
+function ExternalIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" className="h-3 w-3 shrink-0 text-slate-500">
+      <path d="M6 3H3.5A1.5 1.5 0 0 0 2 4.5v8A1.5 1.5 0 0 0 3.5 14h8a1.5 1.5 0 0 0 1.5-1.5V10M9 2h5v5M14 2 7 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function SectionHeading({ children }: { children: ReactNode }) {
-  return <h3 className="text-xs font-medium uppercase tracking-wider text-zinc-500">{children}</h3>;
+  return <h3 className="text-xs font-medium uppercase tracking-wider text-slate-500">{children}</h3>;
 }
