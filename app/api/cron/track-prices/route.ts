@@ -12,9 +12,9 @@
  * Vercel sends `Authorization: Bearer $CRON_SECRET`. Anything else gets 401.
  * Requires Next.js 15.1 or later (`after`).
  */
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse, after, type NextRequest } from "next/server";
 
+import { isCronAuthorized } from "@/lib/api/cron-auth";
 import { errorResponse, failureResponse } from "@/lib/api/respond";
 import { getAppPrice } from "@/lib/steam/endpoints";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
@@ -32,7 +32,7 @@ const CONCURRENCY = 2;
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
-    if (!isAuthorized(request.headers.get("authorization"))) {
+    if (!isCronAuthorized(request.headers.get("authorization"))) {
       return errorResponse("unauthorized", 401);
     }
 
@@ -78,13 +78,4 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   } catch (err) {
     return failureResponse(err);
   }
-}
-
-function isAuthorized(header: string | null): boolean {
-  const secret = process.env.CRON_SECRET;
-  // An unset or short secret must never authorize anything.
-  if (!secret || secret.length < 16 || !header) return false;
-  const expected = Buffer.from(`Bearer ${secret}`);
-  const given = Buffer.from(header);
-  return given.length === expected.length && timingSafeEqual(given, expected);
 }

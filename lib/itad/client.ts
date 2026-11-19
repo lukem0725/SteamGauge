@@ -49,6 +49,11 @@ const ENDPOINTS = {
    * Pass `since` explicitly: without it the log covered only recent months.
    */
   history: { httpMethod: "GET", path: "/games/history/v2" },
+  /**
+   * One game's info, including `players: { recent, day, week, peak }`
+   * (tracked from Steam). Query: id. Used only for player peaks (v1.11.1).
+   */
+  info: { httpMethod: "GET", path: "/games/info/v2" },
 } as const;
 
 export type ItadEndpoint = keyof typeof ENDPOINTS;

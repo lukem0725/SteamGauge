@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Status** | v1.9: performance: hover prefetch, one-frame Deals drawer, in-memory cache, CDN sharing of per-game data, cached ITAD ids, parallel Wishlist refresh · v1.8.1: query client moved to the root layout (fixes the "No QueryClient set" boot crash) · v1.8: Steam colour theme, global game search in the top bar with a game page, title filters on Deals, Dashboard and Wishlist · v1.7.2: store links in the price breakdown, new Deals dropdown layout, duplicate-name fix, 5 features max on Wishlist cards · v1.7.1: Wishlist cards show Genres · v1.7: wider layout (1600px) on every tab; Wishlist facts under the image; Deals dropdown with header image, 3 tags, no Features; title text is the row toggle |
-| **Date** | 2026-11-17 (v1.8–v1.9); v1.3–v1.7.2: 2026-11-16; v1.2: 2026-11-14 |
+| **Status** | v1.11.2: every player chart range works: 1m to max draw a dashed "Estimated historical trend" from release (at the all-time peak) to where SteamGauge's tracking began, with rises during Steam sales from IsThereAnyDeal's price history, then the solid recorded line; the all-time card shows IsThereAnyDeal's overall peak and when hourly tracking began · v1.11.1: the players panel no longer shows "Player counts could not be loaded": the route degrades instead of answering 503 when recordings can't be read (for example, migration 0004 not yet run), 24-hour and all-time peaks also come from IsThereAnyDeal, and a dashed, labelled estimate fills 48h and 1w until enough is recorded · v1.11: game page adds the Steam review rating, a player stats header (now, 24-hour peak, recorded all-time peak) and a concurrent-player history chart with 48h–max ranges, from player counts SteamGauge records itself (migration 0004, hourly sampler) · v1.10: Dashboard toolbar (title/tag filter, play status, tag, 10 sorts), Detailed/Compact cards, titles open the game page, bulk library store data · v1.9.1: shared site footer with "Made for MIS325." on every page · v1.9: performance: hover prefetch, one-frame Deals drawer, in-memory cache, CDN sharing of per-game data, cached ITAD ids, parallel Wishlist refresh · v1.8.1: query client moved to the root layout (fixes the "No QueryClient set" boot crash) · v1.8: Steam colour theme, global game search in the top bar with a game page, title filters on Deals, Dashboard and Wishlist · v1.7.2: store links in the price breakdown, new Deals dropdown layout, duplicate-name fix, 5 features max on Wishlist cards · v1.7.1: Wishlist cards show Genres · v1.7: wider layout (1600px) on every tab; Wishlist facts under the image; Deals dropdown with header image, 3 tags, no Features; title text is the row toggle |
+| **Date** | 2026-11-19 (v1.11–v1.11.2); 2026-11-17 (v1.8–v1.9); v1.3–v1.7.2: 2026-11-16; v1.2: 2026-11-14 |
 | **Scope** | Technical core, data model, Steam data caching strategy, security configuration |
-| **Schema source** | `steamlite_init.sql` (applied in Supabase 2026-11-14), plus `0002_price_history.sql` and `0003_search_steam_apps.sql`. Sections 4.4 and 5.6 mirror them. |
+| **Schema source** | `steamlite_init.sql` (applied in Supabase 2026-11-14), plus `0002_price_history.sql`, `0003_search_steam_apps.sql` and `0004_player_counts.sql` (v1.11, not yet applied). Sections 4.4 and 5.6 mirror them. |
 | **Stack** | React, Tailwind CSS, Next.js (Route Handlers as serverless functions), Supabase (Postgres) |
 
 ---
@@ -100,7 +100,18 @@ Three Web API services added in v1.3–v1.4 need no key and no Storefront budget
 - **Page width (v1.7).** Every signed-in tab, the navigation bar, and the loading and error screens share one width from `components/layout-width.ts` (`max-w-[1600px]`, same side padding as before). It is a plain module so Server Components (`loading.tsx`) can import it. Dashboard grids add columns at `xl`/`2xl` so cards keep their proportions instead of stretching.
 - **Query client (v1.8.1).** `components/providers.tsx` creates one TanStack Query client (created in `useState`, never at module level, so server renders never share a cache between users) with the app's defaults. `app/layout.tsx` wraps everything inside `<body>` in it. It must sit above the navigation: v1.8 put the global search inside the nav while the client was still provided lower down, in the app shell around page content only, and every page crashed on boot with "No QueryClient set". A test now renders the root layout, app shell, nav and each page together with a stub that fails like the real library when no provider is present.
 - **App shell.** `app/(app)/layout.tsx` wraps every signed-in page with the dark page surface and the navigation. All pages and the nav share the root query client, so data loaded on one page survives navigation and an action on one page can refresh another (watching a game from Deals refreshes the Wishlist, and the reverse). Navigation (`components/app-nav.tsx`) links Dashboard, Deals, and Wishlist: a sticky top bar at 640px and wider, and a fixed bottom tab bar on phones. The current page is marked with `aria-current="page"` as well as colour. The layout does not check the session; each page does, because layouts are not re-rendered on every navigation. `loading.tsx` and `error.tsx` in the same folder keep the wait and failure screens in the same dark design; the error screen never shows the error's message.
-- **Dashboard** (`/dashboard`). One library request drives the Library Health banner and the library list below it. The banner's three stat cards are toggle buttons (`aria-pressed`) that choose the list: **Games owned** lists every game A to Z, **Lifetime hours** lists every game by playtime (most first), and **Unplayed backlog** (the default) lists games with exactly 0 minutes played, A to Z. The list heading and count follow the selection and are announced politely to screen readers. Lists show 24 games at a time with a "Show more" button. In backlog mode the list is the Backlog Guardian deck of cards; each card looks up its store price only when it scrolls into view, so each 24-card page costs at most 24 Storefront lookups, each shared by all users for 24 hours. The card's value rating divides the current US store price by a game length that is **simulated** from the AppID and labelled as such in the UI; there is no real length data source yet. After a stale answer the client re-checks at most twice, 4 seconds apart, then stops.
+- **Dashboard** (`/dashboard`). One library request drives the Library Health banner and the library list below it. The banner's three stat cards are toggle buttons (`aria-pressed`) that choose the list: **Games owned** lists every game A to Z, **Lifetime hours** lists every game by playtime (most first), and **Unplayed backlog** (the default) lists games with exactly 0 minutes played, A to Z. The list heading and count follow the selection and are announced politely to screen readers. Lists show 24 games at a time with a "Show more" button. Since v1.10 prices come from one bulk request instead (below); before, each Backlog card looked up its own price with Storefront `appdetails` as it scrolled into view (24 Storefront calls per page). The card's value rating divides the current US store price by a game length that is **simulated** from the AppID and labelled as such in the UI; there is no real length data source yet. After a stale answer the client re-checks at most twice, 4 seconds apart, then stops.
+- **Dashboard controls (v1.10).** One toolbar (`components/dashboard-view.tsx`, logic in `lib/library-view.ts`) applies to all three sections the stat cards choose (All games, Lifetime hours, Unplayed backlog). Filters and sort carry over when switching sections.
+  - **Filter by title or tag:** every word typed must appear in the title or one of the game's tags.
+  - **Play status:** Unplayed (0 minutes), Played, Played in the last 2 weeks. Off in the backlog, which is unplayed games by definition.
+  - **Genre or tag:** one Steam tag, listed with how many games in the section carry it. Steam's genre labels (RPG, Action, Strategy) are tags.
+  - **Sort:** Section default (A to Z, or by playtime in Lifetime hours), title A–Z / Z–A, hours played both ways, price both ways, release date both ways, last played. Unknown values sort last in both directions. Price and release sorts are disabled until store data loads.
+  - **Card size:** Detailed (header art, playtime, release year, last played, 3 tags, current price; unplayed games also get the backlog value meter) or Compact (one dense row: icon, title, playtime, price). 24 detailed or 60 compact per "Show more".
+  - Card size and sort are remembered in the browser (`localStorage`, read after the first render so hydration matches); filters last until the page is left.
+  - Every game's title links to `/game/[appid]`, the page the top-bar search opens. In Compact rows the link covers the whole row; Detailed cards keep "View on Steam".
+  - Lifetime hours shows each game's playtime rank, its place among all owned games, so the number stays the same under any filter or sort.
+  - **Not available from Steam:** the date a game was added or bought (no API; "Last played" is offered instead) and "Completed" (Steam does not record completion; inferring it from achievements would need one call per game). Genres proper come only from per-game Storefront `appdetails`, too costly across a library; tags cover them.
+- **Library store data (v1.10).** `GET /api/library/store` returns header art, release date, current US price and up to 5 tag names for the signed-in user's games. One `GetItems` call (Web API budget) per 50 games, 3 at a time, for at most 2,000 games, most played first. It is cached per user for 12 hours (stale up to 3 days), keyed by the library's appids, so a purchase makes a new entry. Tag names come from the shared tag list; if that fails, prices and dates still arrive without tags. The list renders from the library alone and fills in when this arrives.
 - **Deals** (`/deals`). A dense, SteamDB-style table. One request to `GET /api/deals` returns every discounted game among Steam's global top 1,000 sellers, and the browser filters, sorts and pages them with no further requests.
   - **Expandable rows (v1.6, refined v1.7).** Clicking a row, or the game's title text (the title itself is the button, with `aria-expanded`; there is no arrow icon), opens a detail card directly under that row. The card starts with the game's header image. Below it (v1.7.2), "About this game" and "Price breakdown" sit side by side, and the price history chart gets its own full-width row underneath. Its facts show Genres and at most 3 tags; the Features list is left out here. One card is open at a time; Escape or "Close" folds it. Nothing in the table navigates away: the card's "View on Steam" button opens the store page in a new tab. The card holds the full price history chart, a price breakdown (Steam all-time low, all-time / 1-year / 3-month low at any store, and the current price at every store ITAD tracks, cheapest first), and the game facts below. Its data loads only when opened and is cached. Inside the horizontally scrolling table the card is `position: sticky` and sized to the frame's visible width (measured with a ResizeObserver), so on phones it stays readable while the table scrolls.
   - **Fit at desktop widths (v1.7).** Column widths are percentages of a fixed-layout table that never scrolls sideways from 1280px. Game names wrap to at most 3 lines (full name on hover) instead of being cut to one. Below 1440px (90rem) the filter sidebar is 14rem instead of 16rem, header labels are 11px with tighter spacing, and only the active column shows its sort arrow, so nothing in the header or cells overlaps. At 1440px and up the table looks as before, just wider.
@@ -148,6 +159,33 @@ Three Web API services added in v1.3–v1.4 need no key and no Storefront budget
   - It follows the ARIA 1.2 combobox pattern: `aria-expanded`, `aria-controls`, `aria-activedescendant`, a listbox of options and a polite status line. Up and Down move through results (wrapping), Enter opens the highlighted result or the first one, Escape closes and then clears, and "/" focuses the box from anywhere on the page.
   - Choosing a game opens `/game/[appid]`.
 - **Game page (v1.8).** `app/(app)/game/[appid]/page.tsx` checks the session and the AppID (404 for anything that is not 1–9,999,999), then renders `components/game-view.tsx`. The page shows the header image, type and release date, title, short description (as text), price, "View on Steam" (new tab) and "Watch" (adds to the SteamGauge watchlist). Below that are the same game facts, store price list and full price history chart as the Deals dropdown. It reuses `GET /api/apps/[appid]`, `/insights?mode=full` and the history route, so it adds no new upstream calls.
+- **Game page additions (v1.11).**
+  - **Review rating** (`components/review-badge.tsx`), under the description: Steam's label as a badge ("Very Positive") and "91% of 128,734 user reviews are positive". It comes from full-mode insights, which now also reads the cached `GetAppReviews` summary (3 days fresh, 14 days stale; the same entry Deals and Wishlist use). Colours follow Steam: positive labels `#66C0F4` (9.3:1 on the card), mixed `#B9A074` (Steam's tan, 7.4:1, used instead of gray so "Mixed" does not read as "no data"), negative a `#A34C25` tint with `#E0805A` text (6.6:1; `#A34C25` alone is only 3.2:1). The label decides the tone; the 70%/40% thresholds are used only when Steam gives no label. For labels like "8 user reviews" it shows "X% positive" instead. While facts load it shows a skeleton; if Steam could not be asked, "Steam reviews are unavailable right now."
+  - **Players panel** (`components/player-history.tsx`), below the price history and shown for free games too:
+    - Header "Concurrent players" with a "Full history on SteamDB" link (`https://steamdb.info/app/{appid}/charts/`, new tab).
+    - Three `#0B0E14` stat cards with large white numbers: **players right now** (live from Steam, with its age), **24-hour peak** (time of the reading), **all-time peak (recorded)** (date, and "since" the first recording). Peaks are labelled "recorded" because they are the highest of our readings, not Steam's own records.
+    - Range buttons above the chart: 48h, 1w, 1m, 3m, 6m, 1y, 3y, 6y, max. A range is disabled until the recording reaches into it (`availableRanges` in `lib/player-history.ts`); max is always on. Since v1.11.1, 48h and 1w are on whenever there is a live count, and since v1.11.2 every range is on when a historical trend can be drawn (`offeredRanges`). Default 48h. Changing range keeps the old chart on screen until the new one arrives.
+    - Line chart: `#7DA213` 2 px line over a 12% area fill, y axis from 0 with three gridlines and compact labels (100K), x labels at start, middle and "Now". Each point is the highest reading in its bucket (10 minutes for 48h, 1 hour for 1w, 4 hours for 1m, a day up to 1y, a week for 3y and 6y). A gap longer than 3 buckets (at least 2 hours) breaks the line instead of drawing a false straight segment. The live count is the last point.
+    - Crosshair and tooltip on hover ("60,723 players · Nov 18, 5:50 AM · highest in this 10-minute slot"); the chart is focusable and the arrow keys, Home and End move the reading. A "Show player counts as a table" disclosure builds its rows only when opened.
+    - Fewer than 2 points in a range: a "Not enough readings yet for this range" panel instead of an empty chart. A caption under the chart says when recording started and how it works.
+    - **Since v1.11.1, three kinds of number, never mixed** (`lib/player-history.ts`):
+      - *Measured:* the live Steam count and our recordings. Only these are drawn as the solid line.
+      - *IsThereAnyDeal:* its 24-hour and all-time peaks (`games/info/v2`, `players.day` and `players.peak`, tracked from Steam). Each card shows the highest of our recordings, ITAD, and the live count, and says where it came from: "Recorded at 7:05 PM", "From IsThereAnyDeal", or "At least this: only the live count is known". The "(recorded)" suffix appears only when the all-time peak is ours.
+      - *Estimated:* with fewer than 2 recorded points in 48h or 1w, the chart shows a modelled curve instead. It follows a generic daily cycle (peak around 15:00 UTC, trough about half the peak, weekends higher), is scaled to ITAD's 24-hour and 7-day peaks where known, and ends exactly on the live count. It has 1% seeded variation, so the same game always gets the same curve. It is drawn dashed with a 6% fill, under an "Estimated · not measured" legend. Tooltips say "≈ 62,059 players · estimated" and the table header says "estimated". The caption says what the curve is modelled on. Estimates never feed a stat card, and none is made without a live count.
+      - *Estimated historical trend (v1.11.2):* for 1m, 3m, 6m, 1y, 3y, 6y and max, the time before SteamGauge's first recorded point in the range is a dashed trend. `estimateHistoricalTrend` in `lib/player-history.ts` builds it:
+        - It starts at the all-time peak (ITAD's, or ours if higher) in release week. It eases toward the handover with a 75-day launch decay, and ends exactly on the first recorded point (or the live count), so the dashed and solid lines join.
+        - It rises during each Steam sale of 20% or more in ITAD's price log (`saleWindows`). The lift is 0.6 × discount^1.2 (+42% at 75% off, +26% at 50%), easing through the sale with a 5-day tail. It never exceeds the all-time peak, and has 2% seeded daily variation.
+        - Points are the highest day per bucket: daily up to 1y, weekly for 3y, 6y, and max beyond 400 days since release.
+        - The release day comes from the cached store details (`peekCached("appDetails")`, so no Storefront call; Steam's "21 Aug, 2012" strings parsed by `parseSteamReleaseDate`). It falls back to ITAD's first logged Steam price.
+        - Without an all-time peak (other than the live count) or a release day, there is no trend, `trendAvailable` is false, and long ranges behave as before.
+      - The chart then shows a legend ("Recorded by SteamGauge" solid, "Estimated historical trend" dashed) and a dotted "Tracking began {date}" marker at the handover. Tooltips read "≈ 22,819 players · Jun 27, 2019 · estimated · during a 50% Steam sale". The table gains a Source column (Estimated, with the sale; Recorded; Steam now), and the caption names the release date and how many sales shaped the range. Axis labels show month and year on spans over 300 days.
+      - With a trend available, every range button is enabled. The all-time card, when the peak is ITAD's, reads "IsThereAnyDeal's overall peak · SteamGauge hourly tracking since {date}" (or "has just begun").
+    - **No error banner.** If the players request fails (network, 500), the panel uses the live count the page already loaded from insights. It builds the same estimate in the browser (`fallbackHistory`) and offers "Load recorded history" to retry. Without any live count it shows "No player count to chart yet" in the chart area, never an alert.
+  - The green is `#7DA213`, not the requested `#A4D037`/`#66FF00`: those are lighter than the 0.48–0.67 OKLCH lightness band for data marks on a dark card and would outshine the price chart's `#3A9AD6`. `#7DA213` has the same hue (OKLCH 0.66, 124.6°), passes the contrast check on `#0B0E14` and `#141922`, and stays distinct from the blue for colour-blind readers (ΔE 23.6).
+- **Player count history (v1.11).** Neither Steam nor any public API publishes historical player counts, and SteamDB's terms forbid scraping its charts, so SteamGauge records its own:
+  - Every live `GetNumberOfCurrentPlayers` refresh (the 10-minute insights cache) records a reading through `record_player_count`, via the `onRefreshed` hook in `lib/steam/endpoints.ts` (`lib/steam/player-recorder.ts`; never throws, logs only the Postgres error code).
+  - `GET /api/cron/sample-players` reads current players for up to 300 games an hour: watched games first (most watchers first), then games viewed in the last 14 days. It runs 5 at a time on the cron quota tier and stops early on `quota_exhausted` or `throttled`, then purges fine-grained rows older than 31 days. Viewing a game page notes interest (`note_player_interest`, at most once an hour per game) after the response is sent.
+  - History therefore starts when a game is first viewed or watched after deployment. The page says so and links to SteamDB for older data.
 - **Title filters (v1.8).** Deals, Dashboard and Wishlist each have a filter box (`components/title-filter.tsx`) that narrows the list already on screen. They never call the server or change the URL.
   - Matching uses `matchesTitle` in `lib/title-search.ts`: every word typed must appear in the title, in any order. Case, accents, ™/®/© and punctuation are ignored, and Roman numerals match digits ("civilization 6" finds "Civilization VI").
   - Deals: next to "Sort by". The title is part of the filter state, counts as an active filter, and "Reset filters" clears it.
@@ -188,6 +226,7 @@ Route Handlers under `app/api/`. The proxy exposes **fixed, purpose-built endpoi
 | `GET /api/apps/[appid]/news` | `ISteamNews/GetNewsForApp` | No (CDN cacheable) |
 | `GET /api/resolve/[vanity]` | `ISteamUser/ResolveVanityURL` | Yes |
 | `GET /api/deals` | `IStoreQueryService/Query` (5 pages of 200, store data included), ITAD ID lookup + prices by AppID, `GetAppReviews` (at most 30 per request, only where reviews are missing), `GetOwnedGames`, `GetWishlist`; fallback: Storefront `featuredcategories` + `GetItems` + ITAD | Yes |
+| `GET /api/library/store` | `GetOwnedGames` (cached), `GetItems` with tags (50 per call, at most 2,000 games), `GetTagList` (cached) (v1.10) | Yes, own library only |
 | `GET /api/search?q=` | Storefront `storesearch` + `GetItems` (capsule, release, price), cached 24 h for everyone; `search_steam_apps` catalog RPC | Yes, plus 60 searches/minute per user |
 | `GET /api/wishlist` | `IWishlistService/GetWishlist`, `GetItems` for the Steam wishlist plus the watchlist, `GetAppReviews` (at most 20 per request, only where needed), ITAD ID lookup + prices (lows) | Yes |
 | `POST /api/wishlist` | Storefront `appdetails`, only if the app is not cached | Yes |
@@ -195,6 +234,8 @@ Route Handlers under `app/api/`. The proxy exposes **fixed, purpose-built endpoi
 | `GET /api/apps/[appid]/insights?mode=full\|card` | `GetNumberOfCurrentPlayers`, `GetItems` (one app), `GetTagList`, Storefront `appdetails` (full mode only), ITAD lookup + prices (full mode only); all cached | Yes |
 | `GET /api/wishlist/[appid]/history` | ITAD ID lookup + `games/history` (all years); fallback: Storefront `appdetails` (price only), then reads `price_history` | Yes |
 | `GET /api/cron/track-prices` | Storefront `appdetails` (price only) per tracked app, at most 100 per run | `CRON_SECRET` bearer token |
+| `GET /api/apps/[appid]/players?range=48h\|1w\|1m\|3m\|6m\|1y\|3y\|6y\|max` | `GetNumberOfCurrentPlayers` (cached 10 min); ITAD `games/info/v2` player peaks (cached 1 h, v1.11.1); for 1m and longer, ITAD `games/history` (the cached price history the game page already loads) and a cache-only read of store details for the release date (v1.11.2); reads `player_count_stats` and `player_count_series` (v1.11) | Yes |
+| `GET /api/cron/sample-players` | `GetNumberOfCurrentPlayers` for up to 300 games per run, cron quota tier (v1.11) | `CRON_SECRET` bearer token |
 
 The wishlist routes were first planned as `/api/apps/tracked`; they were built as `/api/wishlist` (2026-11-15) and that is the name of record.
 
@@ -222,6 +263,13 @@ Notes on the search and wishlist routes:
   - `POST` and `DELETE` reject any request whose `Origin` header is not `APP_ORIGIN` (403 `bad_origin`), before looking at the session.
   - `history` returns daily prices and a `lowStatus`, with `source: "itad" | "local"`. With ITAD the claim "lowest on record" needs only one point, because the record is ITAD's full history; with the local record it still needs 7 days. It is not personal data; any signed-in user may read it.
 - **Price tracking job.** `GET /api/cron/track-prices` refreshes the price of every tracked app once a day so history grows even when nobody opens the app. Schedule it in `vercel.json` (`{ "crons": [{ "path": "/api/cron/track-prices", "schedule": "17 9 * * *" }] }`). It answers 401 unless the request carries `Authorization: Bearer $CRON_SECRET`, and refuses to run at all if that secret is unset or shorter than 16 characters.
+- **Players route (v1.11).** `GET /api/apps/[appid]/players` needs a session (401), validates the AppID and the range (400 `invalid_range`), and returns `{ current, peak24h, peakRecorded, recordingSince, bucketSeconds, points }` from `buildPlayerHistory` in `lib/player-counts.ts`. The live count and the stats query run in parallel. The live count, the stats query and ITAD's player peaks run in parallel; each can fail on its own (v1.11.1):
+  - Recordings unreadable (migration 0004 not run, database down): 200 with `recording: "unavailable"`, the live point only, and the estimate. The server log gets `{"area":"player_counts","event":"stats_read_failed","detail":"<Postgres code>"}`; PGRST202, 42883 or 42P01 mean the migration is missing. Before v1.11.1 this was 503 `storage_unavailable`, which the panel showed as "Player counts could not be loaded".
+  - Steam fails: `current: null` and no estimate.
+  - ITAD fails or has no key: peaks from recordings and the live count only.
+
+  A complete answer carries `public, s-maxage=300, stale-while-revalidate=600`. One missing the live count or the recordings carries `public, s-maxage=60, stale-while-revalidate=120`, so it recovers within a minute of the cause being fixed.
+- **Player sampling job (v1.11).** `GET /api/cron/sample-players` (bearer check shared with track-prices in `lib/api/cron-auth.ts`, constant-time) returns `{ apps, read, failed, stoppedEarly, purged }`. It is **not** in `vercel.json`: Vercel's Hobby plan runs cron jobs at most once a day, and an hourly sampler needs more. `.github/workflows/sample-players.yml` calls it at minute 11 of every hour (and on manual dispatch) using the repository secrets `STEAMGAUGE_URL` and `CRON_SECRET`; it does nothing if they are unset. On Vercel Pro, add `{ "path": "/api/cron/sample-players", "schedule": "11 * * * *" }` to `vercel.json` instead. Supabase `pg_cron` with `pg_net` would also work.
 
 Every handler runs the same pipeline, implemented once in `lib/steam/cached-fetch.ts`:
 
@@ -237,7 +285,7 @@ Response envelope, so the UI can always show data age:
 
 `private` and `not_found` are HTTP 200 with `data: null`: they are valid answers about the data. Failures are `{ "error": "<code>" }` with a matching HTTP status (400, 401, 500, 502, 503) and a `Retry-After` header where waiting helps. The helpers in `lib/api/respond.ts` produce both forms.
 
-Implemented so far: the two auth routes, `GET /api/players/[steamid]/games`, `GET /api/apps/[appid]`, `GET /api/apps/[appid]/insights`, `GET /api/deals`, `GET /api/search`, the four wishlist routes, the price-tracking cron route, and `POST /api/auth/logout`. Still to build: the other player and app routes in the table, and per-session inbound rate limiting on data routes (section 6.4). Data routes require Next.js 15.1 or later (`after`, async `params`).
+Implemented so far: the two auth routes, `GET /api/players/[steamid]/games`, `GET /api/apps/[appid]`, `GET /api/apps/[appid]/insights`, `GET /api/deals`, `GET /api/search`, the four wishlist routes, the price-tracking cron route, `GET /api/apps/[appid]/players` and the player sampling cron route (v1.11), and `POST /api/auth/logout`. Still to build: the other player and app routes in the table, and per-session inbound rate limiting on data routes (section 6.4). Data routes require Next.js 15.1 or later (`after`, async `params`).
 
 ### 4.3 Suggested layout
 
@@ -257,9 +305,13 @@ app/
 components/
   app-nav.tsx               # top bar + phone tab bar, active page, global search, sign-out form (implemented)
   global-search.tsx         # search box + autocomplete dropdown (ARIA combobox) (implemented, v1.8)
-  game-view.tsx             # client view for /game/[appid] (implemented, v1.8)
+  game-view.tsx             # client view for /game/[appid]: header, review badge, facts, prices, price and player history (implemented, v1.8; v1.11)
+  review-badge.tsx          # Steam review label + "X% of N user reviews are positive", Steam colours (implemented, v1.11)
+  player-history.tsx        # players panel: stat cards, range buttons, line chart with tooltip, table view (implemented, v1.11)
   title-filter.tsx          # labelled filter box used by Deals, Dashboard and Wishlist (implemented, v1.8)
   game-queries.ts           # per-game query definitions, hover prefetch, row intent detection (implemented, v1.9)
+  game-card.tsx             # Dashboard cards: detailed and compact, title links to /game/[appid], value meter (implemented, v1.10)
+  footer.tsx                # site footer: "Made for MIS325.", Valve/Steam notice; sign-in page and app shell (implemented, v1.9.1)
   dashboard-view.tsx        # client view: stat-card filter (all/playtime/backlog), library list, data age ticker (implemented)
   deals-view.tsx            # client view: filter sidebar, sortable paged deals table (implemented)
   wishlist-view.tsx         # client view: Steam wishlist + watchlist, sync status, lows, watch/remove (implemented)
@@ -269,7 +321,8 @@ components/
   providers.tsx             # client providers: the one TanStack Query client and its defaults (implemented, v1.8.1)
   ui-kit.tsx                # shared: data age ticker, value meter, state panels, lazy-load hook (implemented)
   api/                      # route handlers listed above
-  api/cron/                 # warm + purge jobs (protected by CRON_SECRET)
+  api/cron/                 # track-prices, sample-players (v1.11); warm + purge jobs still to write (protected by CRON_SECRET)
+  api/apps/[appid]/players/ # player stats and history for one range (implemented, v1.11)
 lib/
   steam/
     client.ts               # the ONLY module that reads STEAM_API_KEY (implemented)
@@ -283,8 +336,10 @@ lib/
     reviews.ts              # GetAppReviews summary parser (implemented)
     insights.ts             # parsers: live players, GetItems metadata, tag list (implemented)
     search.ts               # storesearch parser + GetItems enrichment for global search (implemented, v1.8)
+    library-store.ts        # GetItems with tags for a whole library (implemented, v1.10)
     memory-cache.ts         # per-instance LRU in front of api_cache, fresh-only for reads (implemented, v1.9)
     review-backfill.ts      # bounded fill-in of missing review totals: bulk cache read + capped lookups (implemented)
+    player-recorder.ts      # records one player count reading via record_player_count; never throws (implemented, v1.11)
   itad/client.ts            # the ONLY module that reads ITAD_API_KEY; allowlisted endpoints (implemented)
   supabase/server.ts        # server-only admin client (implemented)
   auth/shared.ts            # cookie names, origin, rate limit, safe logging (implemented)
@@ -292,6 +347,7 @@ lib/
   api/respond.ts            # response envelope and error helpers for data routes (implemented)
   api/client.ts             # browser-side fetch for our API: envelope check, ApiError, retry rules (implemented)
   api/game-cache.ts         # shared Cache-Control and prefetch rules for the per-game routes, server only (implemented, v1.9)
+  api/cron-auth.ts          # constant-time CRON_SECRET bearer check for cron routes, server only (implemented, v1.11)
   api/user-limit.ts         # per-user limits in rate_buckets (search, prefetch), server only (implemented, v1.9)
   prefetch-header.ts        # the prefetch request header name, shared by browser and server (implemented, v1.9)
   deals.ts                  # assembles deal rows with owned/wished/watched flags and badges, server only (implemented)
@@ -300,18 +356,23 @@ lib/
   wishlist-sort.ts          # pure wishlist sort orders for the browser (implemented)
   wishlist.ts               # Steam wishlist + watchlist merge, add, remove, server only (implemented)
   price-history.ts          # record and read our own daily price observations, server only (implemented)
+  player-history.ts         # pure: chart ranges, bucket sizes, available ranges, payload types, shared by server and browser (implemented, v1.11)
+  player-counts.ts          # builds the players payload, notes interest, hourly sampler, server only (implemented, v1.11)
+  library-view.ts           # pure Dashboard filters, sorts and store payload types, shared by server and browser (implemented, v1.10)
+  library.ts                # builds /api/library/store: picks games, attaches tag names, server only (implemented, v1.10)
   title-search.ts           # pure title normalising, inline matching and fuzzy scoring, shared by server and browser (implemented, v1.8)
   game-search.ts            # global search: Steam + catalog, merged and ranked, server only (implemented, v1.8)
   value.ts                  # cost-per-hour maths and the SIMULATED game length, shared by server and browser (implemented)
   validation.ts             # zod schemas: steamid, appid, vanity, search, country (implemented)
-supabase/migrations/        # SQL: steamlite_init.sql is migration 0001; 0002_price_history.sql; 0003_search_steam_apps.sql (v1.8)
+supabase/migrations/        # SQL: steamlite_init.sql is migration 0001; 0002_price_history.sql; 0003_search_steam_apps.sql (v1.8); 0004_player_counts.sql (v1.11)
+.github/workflows/sample-players.yml  # hourly call to /api/cron/sample-players (v1.11)
 ```
 
 `lib/steam/client.ts`, `lib/itad/client.ts` and `lib/supabase/server.ts` start with `import "server-only"` so a build fails if any of them is ever imported into client code.
 
 ### 4.4 Data model
 
-Eight tables in the `public` schema: seven created by `steamlite_init.sql` (migration 0001) and `price_history` by `supabase/migrations/0002_price_history.sql`. Any schema change must be made as a new migration and reflected here in the same pull request.
+Ten tables in the `public` schema: seven created by `steamlite_init.sql` (migration 0001), `price_history` by `supabase/migrations/0002_price_history.sql`, and `player_counts` and `player_counts_daily` by `0004_player_counts.sql` (v1.11). Any schema change must be made as a new migration and reflected here in the same pull request.
 
 | Table | Purpose | Primary key |
 |---|---|---|
@@ -323,6 +384,8 @@ Eight tables in the `public` schema: seven created by `steamlite_init.sql` (migr
 | `steam_apps` | Local catalog of Steam apps for name search | `appid` |
 | `tracked_apps` | Apps a user has chosen to follow (the wishlist) | (`user_steamid`, `appid`) |
 | `price_history` | Lowest store price observed per app, country, and UTC day | (`appid`, `cc`, `observed_on`) |
+| `player_counts` | Highest concurrent-player reading per app and 10-minute slot, kept 31 days (v1.11) | (`appid`, `observed_at`) |
+| `player_counts_daily` | Highest reading per app and UTC day, kept indefinitely (v1.11) | (`appid`, `day`) |
 
 Relationships:
 
@@ -331,6 +394,8 @@ users (steamid) ──┬──< sessions (user_steamid)        ON DELETE CASCAD
                   └──< tracked_apps (user_steamid)    ON DELETE CASCADE
 steam_apps (appid) ──< tracked_apps (appid)           ON DELETE CASCADE
 steam_apps (appid) ──< price_history (appid)          ON DELETE CASCADE
+steam_apps (appid) ──< player_counts (appid)          ON DELETE CASCADE
+steam_apps (appid) ──< player_counts_daily (appid)    ON DELETE CASCADE
 
 api_cache, rate_buckets, openid_nonces: no foreign keys
 ```
@@ -397,6 +462,37 @@ create table price_history (
 ```
 
 Rows are written only by the function `record_price_observation(appid, cc, currency, price_initial, price_final, discount_percent)`. It keeps the **lowest** price seen that day (a later, higher observation does not overwrite it, so a sale that ends mid-day is not lost), does nothing for an app that is not in `steam_apps`, and returns whether a row changed. Like `take_quota`, it is `SECURITY INVOKER` with an empty `search_path` and executable only by `service_role`. The table has RLS enabled with no policies and no grants to `anon` or `authenticated`. The primary key serves every read (all days for one app and country, in date order), so there is no extra index. A read returns at most the 1,000 most recent days per app.
+
+`player_counts` and `player_counts_daily` (migration 0004, v1.11), plus a new column `steam_apps.players_viewed_at timestamptz` (when someone last viewed the game page; drives sampling):
+
+```sql
+create table player_counts (
+  appid        integer     not null references steam_apps (appid) on delete cascade,
+  observed_at  timestamptz not null,   -- start of a 10-minute UTC slot
+  players      integer     not null check (players >= 0),
+  primary key (appid, observed_at)
+);
+create index player_counts_observed_at_idx on player_counts (observed_at);  -- for the purge
+
+create table player_counts_daily (
+  appid    integer     not null references steam_apps (appid) on delete cascade,
+  day      date        not null,       -- UTC calendar day
+  peak     integer     not null check (peak >= 0),
+  peak_at  timestamptz not null,       -- when that peak was read
+  primary key (appid, day)
+);
+```
+
+Functions, all `SECURITY INVOKER` with `search_path = ''`, executable by `service_role` only; both tables have RLS on with no policies and no grants to `anon` or `authenticated`. The migration runs in one transaction and can be re-run.
+
+- `record_player_count(appid, players, at)` keeps the higher reading for the 10-minute slot and for the day (with the time of the day's peak). Does nothing (returns false) for an app not in `steam_apps`.
+- `note_player_interest(appid)` sets `players_viewed_at`, at most once an hour per game.
+- `player_count_stats(appid)` returns the 24-hour peak and its time, the all-time recorded peak and its time, and the first recorded day.
+- `player_count_series(appid, since, bucket_seconds)` returns the highest reading per bucket. Buckets under a day read `player_counts`; a day or longer read `player_counts_daily`. Bucket size must be 600 seconds to 31 days.
+- `player_sample_targets(limit)` lists watched games by number of watchers, then games viewed in the last 14 days.
+- `purge_player_counts(keep_days default 31)` deletes old 10-minute rows (never fewer than 7 days kept) and returns the count. Daily peaks are never purged.
+
+Size: one game sampled hourly writes about 720 fine rows a month (bounded by the purge) and 365 daily rows a year. 300 games is about 216,000 fine rows plus 110,000 daily rows a year, a few tens of MB.
 
 Constraints and what they mean for application code:
 
@@ -509,11 +605,13 @@ Implementation details (`lib/steam/cached-fetch.ts`):
 | Wishlist view (Steam wishlist + watchlist + lows) | `player:{steamid}:wishlist:{fnv1a(watchlist appids)}` | 30 min | 24 h | Key changes when the watchlist changes, so a watched game appears at once |
 | ITAD price history (all years) | `app:{appid}:itad-history:full:{cc}` | 12 h | 7 d | Global; history only grows. The `full` segment was added in v1.4 so entries holding ITAD's 3-month default are never reused |
 | Steam review totals | `app:{appid}:reviews` | 3 d | 14 d | Global; review counts move slowly. Read in bulk by Deals and the Wishlist |
-| Live concurrent players | `app:{appid}:players` | 10 min | 2 h | Global; the only fast-moving game fact |
+| Live concurrent players | `app:{appid}:players` | 10 min | 2 h | Global; the only fast-moving game fact. Each live refresh is also recorded in `player_counts` (v1.11) |
 | Developer, publisher, franchise, tag ids | `app:{appid}:store-meta:{cc}` | 24 h | 14 d | Global; GetItems for one app |
 | Steam tag names | `store:tags:english` | 7 d | 30 d | One entry for every user and game |
 | One game's prices at every store (ITAD), with store links | `app:{appid}:itad-prices:v2:{cc}` | 1 h | 24 h | Global; expanded Deals rows only |
 | Global search results (Steam storesearch + GetItems) | `search:{cc}:{normalised term}` | 24 h | 7 d | Global; one Storefront call per query per day serves every user (v1.8) |
+| Library store data (art, release, price, tags for owned games) | `player:{steamid}:library-store:{cc}:{fnv1a(appids)}` | 12 h | 3 d | Per user; a purchase changes the key (v1.10) |
+| ITAD player peaks (recent, 24 h, 7 d, all-time) | `app:{appid}:itad-players` | 1 h | 24 h | Global; game page stat cards and the estimate's scale (v1.11.1) |
 | Steam AppID → ITAD game id | `app:{appid}:itad-id` | 30 d | 90 d | Global; ids never change. Written in bulk by every Deals and Wishlist refresh, so an expanded row's prices and history skip the lookup call (v1.9) |
 | Private profile / not found | same key, `status = 'private'` | 30 min | 30 min | Negative caching stops retry storms |
 
@@ -701,6 +799,7 @@ We never see or handle a Steam password. Signing in proves SteamID ownership onl
 - **Default table grants are revoked** from `anon` and `authenticated` on all seven tables, as a second layer behind RLS.
 - Authorization is enforced in application code: every handler that touches user-owned rows filters by the SteamID from the verified session, never from a request parameter.
 - `take_quota` has `EXECUTE` revoked from `public`, `anon`, and `authenticated` and granted only to `service_role`. It runs as `SECURITY INVOKER` with an empty `search_path`. Any future RPC function follows the same pattern.
+- The six player-count functions (v1.11, migration 0004) follow the same pattern: `SECURITY INVOKER`, `search_path = ''`, `EXECUTE` for `service_role` only, and RLS on both tables with no policies. Tested on Postgres 16: `anon` and `authenticated` are denied on the tables and the functions.
 - `search_steam_apps` (v1.8, migration 0003) follows that pattern: `SECURITY INVOKER`, `search_path = ''` with `extensions.`-qualified `pg_trgm` calls, `EXECUTE` for `service_role` only, input limited to 3–64 characters and results to 1–25 rows. It sets `pg_trgm.word_similarity_threshold = 0.45` for its own calls only. Tested on Postgres 16: `anon` and `authenticated` are refused, the trigram index is used, and the migration can be run again safely.
 - Run Supabase's Security Advisor before each release and resolve every finding.
 - If a later version adds browser-side Supabase (for example Realtime), that requires real RLS policies and a design review first. Do not ship the secret key to enable it.
@@ -745,7 +844,7 @@ Permissions-Policy: camera=(), microphone=(), geolocation=()
 - Retention: cached player data expires at `stale_until` (maximum 7 days) and is purged by cron.
 - Steam Web API Terms: one key, stay under 100,000 calls/day, keep the key confidential, publish a privacy policy, and do not use Steam data for unsolicited marketing.
 - IsThereAnyDeal: price lows and history shown in the app are attributed to IsThereAnyDeal with a link. Check their API terms before launch.
-- Branding: footer text stating SteamGauge is not affiliated with Valve, with "Powered by Steam" attribution linking to `steampowered.com`.
+- Branding: footer text stating SteamGauge is not affiliated with Valve, with "Powered by Steam" attribution linking to the Steam store. Since v1.9.1 one shared footer (`components/footer.tsx`) carries it on the sign-in page and on every signed-in page (before, signed-in pages had none), with the line "Made for MIS325." above it. Colours: `footer` token `#101822`, slate-400 text (7.0:1) and a steam-300 accent (10.5:1). On phones it sits above the fixed tab bar.
 - The Storefront API is undocumented and unsupported. Treat it as a dependency that can change or disappear, and keep store features isolated behind `lib/steam/endpoints.ts`.
 
 ---
@@ -789,6 +888,13 @@ Permissions-Policy: camera=(), microphone=(), geolocation=()
 | ADR-25 | Complete per-game answers (insights, history) are CDN-cacheable; personal lists stay private (v1.9) | `s-maxage` on every route, as first requested | Deals and Wishlist responses contain owned, wished and watched flags; sharing them would leak one user's list to others. Per-game data is public, so sharing it is safe even though cache hits skip the session check |
 | ADR-26 | Hover prefetch uses its own lower quota tier and is declined rather than answered with degraded data (v1.9) | Prefetch as a normal request | A mouse sweep must not use up the shared Storefront budget, and a refused guess must not fill the browser cache with a half-empty answer that a click would then show |
 | ADR-27 | Cache Steam AppID → ITAD ids instead of trying to parallelise lookup and prices (v1.9) | `Promise.all` over lookup, prices and history | Prices and history need the id, so they cannot start before the lookup. Recording ids from the bulk Deals/Wishlist lookups removes the call from the drawer's path for nearly every row |
+| ADR-28 | Dashboard store data in one bulk `GetItems` request per user, replacing per-card Storefront lookups (v1.10) | Per-card `appdetails` as before; per-game insights for every card | Sorting by price or release and filtering by tag need data for every game, not just visible cards. `GetItems` covers 50 games per call on the Web API budget, so a 1,000-game library costs 20 calls a day instead of up to 1,000 Storefront calls |
+| ADR-29 | Record our own concurrent-player readings for the history chart (v1.11) | Scrape SteamDB; show only the live count; fake a history from the live count | No Steam or public API serves history, and SteamDB's terms forbid scraping. Recording is honest and cheap (one `GetNumberOfCurrentPlayers` call per game per hour, at most 7,200 Web API calls a day). The cost is that history starts at deployment, so the page labels peaks "recorded" and links to SteamDB |
+| ADR-30 | Two tables: 10-minute slots for 31 days, daily peaks forever (v1.11) | One table of every reading; time-series extension | Short ranges need fine detail; long ranges only need the daily high. Keeps storage bounded with plain Postgres and no extension |
+| ADR-31 | Hourly sampling through GitHub Actions, not `vercel.json` (v1.11) | Vercel cron (Hobby runs once a day); sample only on page views | Hobby's daily limit would give one reading a day. Any scheduler that sends the bearer token works; the route does not care who calls it |
+| ADR-32 | Player line `#7DA213` instead of `#A4D037`; Steam's tan for "Mixed" reviews instead of gray (v1.11) | The requested colours | `#A4D037` is too light for a data line on the dark card and outshines the price chart's blue; `#7DA213` is the same hue and passes the palette checks. Gray reads as "no data" |
+| ADR-33 | Players panel degrades per source; peaks also from ITAD; a labelled estimate only for 48h and 1w (v1.11.1) | Keep the 503 and the error banner; generate a realistic-looking history for every range and show it like measured data | One missing source should not blank the whole panel. ITAD gives real peaks at once. An estimate shown as data would mislead users, so it is dashed, labelled in the chart, tooltip, table and caption, and kept out of the stat cards. Ranges past a week have nothing to anchor a curve to, so they show recordings or the "not enough readings" state |
+| ADR-34 | Long ranges get an estimated historical trend anchored on release, the all-time peak, the handover point and ITAD's sale log (v1.11.2; revises ADR-33's "48h and 1w only") | Keep long ranges disabled until recordings cover them; a flat line at today's level | Requested, so every range shows a continuous line. The curve is pinned to real anchors (release day, all-time peak, today's level, real sale dates) and labelled in the legend, tooltip, table and caption, with a "Tracking began" marker where measured data takes over. Where the all-time peak actually happened is unknown; the model assumes release week, and the caption says real peaks can fall at other times |
 | ADR-20 | The deals pool comes from Steam (discounted apps among the global top 1,000 sellers); ITAD only enriches by Steam AppID | ITAD's deals list as the pool, with a reverse lookup to AppIDs | The ITAD-driven pool was dominated by obscure titles and missed major sales. Steam's own query defines "on sale" exactly as the store does |
 
 ---
@@ -817,6 +923,12 @@ Permissions-Policy: camera=(), microphone=(), geolocation=()
 | A private Steam wishlist looks the same as an empty one | User sees "empty or private" when theirs is just private | UI explains the Game details privacy setting and links to it |
 | Next.js or the host changes how a Route Handler's own `Cache-Control` is treated | Per-game answers stop being shared by the CDN (slower, not wrong) | Check the response headers on a deployed preview; the in-memory and Postgres caches still apply |
 | Hover prefetch raises request volume | More function invocations and database reads per visit | 120 ms intent delay, no touch prefetch, skip when cached or loading, 3 in flight, 120 per user per minute, lower quota tier |
+| Player history is empty at launch and only covers games someone watches or views (v1.11) | Short charts and modest "recorded" peaks for weeks | The page says when recording began, disables ranges with no data, and links to SteamDB for full history |
+| The hourly sampler is not scheduled (secrets unset, GitHub disables scheduled workflows after 60 days without repository activity) | Readings only when someone views a game; gaps in the chart | Gaps break the line instead of being drawn over; the job's JSON result shows `read` and `stoppedEarly`; re-enable the workflow or move to Vercel Pro or `pg_cron` |
+| Sampling 300 games an hour uses up to 7,200 Web API calls a day | Less headroom for user requests | Runs on the cron quota tier and stops on `quota_exhausted` or `throttled`; `SAMPLE_MAX_APPS` can be lowered |
+| ITAD `games/info/v2` `players` fields (`day` = 24-hour peak, `peak` = all-time) taken from the documented response sample without a live call (v1.11.1) | A card labelled with the wrong window | Each field is optional and validated; compare one game against SteamDB before launch |
+| A reader takes the estimated curve for real data (v1.11.1) | Wrong impression of a game's activity pattern | Dashed line, "Estimated · not measured" legend, "≈" and "estimated" in tooltips and the table, caption; estimates never shown in cards; only 48h/1w; replaced by measured data as soon as 2 readings exist |
+| The historical trend puts the all-time peak at release; for games that peaked later (a free-to-play switch, a big update, a viral moment) the shape is wrong (v1.11.2) | Misleading long-range shape | Labelled as an estimate everywhere it appears; the caption says real peaks can fall at other times; links to SteamDB for the real chart; replaced by recordings over time |
 | Quota bug (for example a refresh loop) | Budget burned | Governor is enforced in the database, not in app code; per-minute ceiling limits damage |
 
 Open questions for the team:

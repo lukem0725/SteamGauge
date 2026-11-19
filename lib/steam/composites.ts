@@ -670,6 +670,51 @@ export async function fetchWishlistView(
 // Price history (ITAD)
 // =============================================================================
 
+// -----------------------------------------------------------------------------
+// ITAD player stats (resource `itadPlayers`, v1.11.1)
+// -----------------------------------------------------------------------------
+
+/** ITAD's player counts for one game, tracked from Steam. Each may be missing. */
+export interface ItadPlayersData {
+  /** A recent reading (close to the live count). */
+  readonly recent: number | null;
+  /** Highest in the last 24 hours. */
+  readonly day: number | null;
+  /** Highest in the last 7 days. */
+  readonly week: number | null;
+  /** Highest ever recorded by ITAD. */
+  readonly peak: number | null;
+}
+
+const playerCount = z
+  .union([z.number(), z.string()])
+  .nullish()
+  .transform((v) => {
+    const n = typeof v === "string" ? Number(v) : v;
+    return typeof n === "number" && Number.isInteger(n) && n >= 0 && n < 100_000_000 ? n : null;
+  });
+const itadInfoPlayersSchema = z.object({
+  players: z
+    .object({ recent: playerCount, day: playerCount, week: playerCount, peak: playerCount })
+    .partial()
+    .nullish(),
+});
+
+/** Plan for `itadPlayers`: ITAD id (cached), then games/info. */
+export async function fetchItadPlayers(io: UpstreamIO, appid: number): Promise<Validated<ItadPlayersData>> {
+  const itadId = await resolveItadId(io, appid);
+  if (!itadId) return { status: "not_found" };
+  const info = itadInfoPlayersSchema.parse(await io.itad("info", { query: { id: itadId } }));
+  const players = info.players ?? {};
+  const data: ItadPlayersData = {
+    recent: players.recent ?? null,
+    day: players.day ?? null,
+    week: players.week ?? null,
+    peak: players.peak ?? null,
+  };
+  return Object.values(data).every((v) => v === null) ? { status: "not_found" } : { status: "ok", data };
+}
+
 export interface ItadHistoryData {
   readonly currency: string | null;
   /** Lowest Steam price per UTC day with a price change, oldest first. */

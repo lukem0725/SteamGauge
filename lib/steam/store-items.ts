@@ -46,6 +46,11 @@ export interface StoreItem {
   readonly discountPercent: number;
   /** When the current discount ends (ISO), if Steam says. */
   readonly saleEndsAt: string | null;
+  /**
+   * Steam tag ids, most-voted first. Present only when the request asked for
+   * tags (fetchStoreItems' `tagCount`), so other cached payloads are unchanged.
+   */
+  readonly tagids?: readonly number[];
 }
 
 /** GetItems accepts at most this many ids per call. */
@@ -111,6 +116,17 @@ const rawStoreItemSchema = z.object({
     })
     .optional()
     .catch(undefined),
+  // Requested with include_tag_count (v1.10): weighted tags, or bare ids.
+  tags: z
+    .array(
+      z.object({
+        tagid: z.number().int().positive(),
+        weight: z.number().nonnegative().optional().catch(undefined),
+      }),
+    )
+    .optional()
+    .catch(undefined),
+  tagids: z.array(z.number().int().positive()).optional().catch(undefined),
   best_purchase_option: z
     .object({
       final_price_in_cents: centsSchema,
@@ -156,6 +172,8 @@ export function parseStoreItems(raw: unknown): StoreItem[] {
     const reviews = item.reviews?.summary_filtered;
     const count = reviews?.review_count ?? null;
     const option = item.best_purchase_option;
+    const weighted = [...(item.tags ?? [])].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0));
+    const tagids = weighted.length > 0 ? weighted.map((tag) => tag.tagid) : (item.tagids ?? []);
     const endDates = (option?.active_discounts ?? [])
       .map((d) => d.discount_end_date)
       .filter((d): d is number => d !== undefined);
@@ -182,6 +200,7 @@ export function parseStoreItems(raw: unknown): StoreItem[] {
       priceInitial: option?.original_price_in_cents ?? option?.final_price_in_cents ?? null,
       discountPercent: option?.discount_pct ?? 0,
       saleEndsAt: endDates.length > 0 ? new Date(Math.min(...endDates) * 1000).toISOString() : null,
+      ...(item.tags !== undefined || item.tagids !== undefined ? { tagids: [...new Set(tagids)] } : {}),
     });
   }
   return out;
@@ -196,6 +215,8 @@ export async function fetchStoreItems(
   io: UpstreamIO,
   appids: readonly number[],
   countryCode: string,
+  /** Also ask for this many top tags per app (v1.10). Default: no tags. */
+  options: { readonly tagCount?: number } = {},
 ): Promise<{ items: Map<number, StoreItem>; failedBatches: number }> {
   const unique = [...new Set(appids)];
   const batches: number[][] = [];
@@ -219,6 +240,7 @@ export async function fetchStoreItems(
                 include_release: true,
                 include_reviews: true,
                 include_all_purchase_options: true,
+                ...(options.tagCount ? { include_tag_count: options.tagCount } : {}),
               },
             }),
           });

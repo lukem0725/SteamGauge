@@ -21,6 +21,8 @@
   --color-chrome: #0b0e14;
   --color-surface: #0f1219;
   --color-surface-raised: #141922;
+  /* Site footer: Steam navy, a shade darker than the page. */
+  --color-footer: #101822;
 
   --color-steam-50: #eef8fe;
   --color-steam-100: #d6eefc;

@@ -1,0 +1,35 @@
+# Hourly player-count sampling for SteamGauge (v1.11).
+#
+# Vercel's Hobby plan only runs cron jobs once a day, so this workflow calls
+# the sampler instead. It works on any Vercel plan. Set two repository
+# secrets (Settings > Secrets and variables > Actions):
+#   STEAMGAUGE_URL   the deployment's origin, e.g. https://steamgauge.example.com
+#   CRON_SECRET      the same value as the deployment's CRON_SECRET
+# Until both are set, the job exits without calling anything.
+# GitHub may delay scheduled runs by some minutes; the chart tolerates that.
+name: Sample player counts
+
+on:
+  schedule:
+    - cron: "11 * * * *"
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Call the sampler
+        env:
+          STEAMGAUGE_URL: ${{ secrets.STEAMGAUGE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$STEAMGAUGE_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "STEAMGAUGE_URL or CRON_SECRET is not set; skipping."
+            exit 0
+          fi
+          curl --fail --silent --show-error --max-time 90 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$STEAMGAUGE_URL/api/cron/sample-players"

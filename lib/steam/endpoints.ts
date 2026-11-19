@@ -39,7 +39,9 @@ import {
   type StoreMeta,
   type SteamTagList,
 } from "./insights";
-import type { ItadAppPriceData } from "./composites";
+import type { ItadAppPriceData, ItadPlayersData } from "./composites";
+import { LIBRARY_STORE_MAX_APPS, type LibraryStoreData } from "./library-store";
+import { recordPlayerCount } from "./player-recorder";
 import type { SteamSearchData } from "./search";
 import { parseStoreSpecials } from "./specials";
 import type {
@@ -816,6 +818,28 @@ export async function getItadHistory(
   });
 }
 
+/**
+ * IsThereAnyDeal's player peaks for one app (24 hours, 7 days, all time),
+ * tracked from Steam. Shared by all users, fresh for an hour (v1.11.1).
+ * Requires ITAD_API_KEY.
+ *
+ * Result statuses: "ok", or "not_found" when ITAD does not know the app or has no counts.
+ */
+export async function getItadPlayers(
+  appid: number | string,
+  context: EndpointContext = {},
+): Promise<CachedResult<ItadPlayersData>> {
+  const id = appIdSchema.parse(appid);
+  return cachedFetch({
+    resource: "itadPlayers",
+    keyArgs: [id],
+    validate: compositeResult<ItadPlayersData>,
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
 // =============================================================================
 // Review summaries  (IUserReviewsService/GetAppReviews)
 // =============================================================================
@@ -879,6 +903,8 @@ export async function getCurrentPlayers(
     resource: "currentPlayers",
     keyArgs: [id],
     validate: (raw) => parseCurrentPlayers(raw, id),
+    // Every live reading is also saved for the player history chart (v1.11).
+    onRefreshed: (data) => recordPlayerCount(id, data.count),
     session: context.session,
     waitUntil: context.waitUntil,
     priority: context.priority,
@@ -897,6 +923,33 @@ export async function getAppStoreMeta(
     resource: "appStoreMeta",
     keyArgs: [id, cc],
     validate: (raw) => parseStoreMeta(raw, id),
+    session: context.session,
+    waitUntil: context.waitUntil,
+    priority: context.priority,
+  });
+}
+
+/**
+ * Store data (art, release date, price, top tags) for a user's library, for
+ * the Dashboard (v1.10). One per-user entry, fresh for 12 hours.
+ *
+ * @param appids  The games to cover, at most LIBRARY_STORE_MAX_APPS. Sorted
+ *                here, so the same set always maps to the same cache entry.
+ */
+export async function getLibraryStore(
+  steamid: string,
+  appids: readonly number[],
+  countryCode: string = DEFAULT_COUNTRY_CODE,
+  context: EndpointContext = {},
+): Promise<CachedResult<LibraryStoreData>> {
+  const id = steamIdSchema.parse(steamid);
+  const cc = countryCodeSchema.parse(countryCode);
+  const unique = [...new Set(appids.map((appid) => appIdSchema.parse(appid)))].sort((a, b) => a - b);
+  if (unique.length > LIBRARY_STORE_MAX_APPS) throw new Error("too many appids for one library entry");
+  return cachedFetch({
+    resource: "libraryStore",
+    keyArgs: [id, cc, unique.join(",")],
+    validate: compositeResult<LibraryStoreData>,
     session: context.session,
     waitUntil: context.waitUntil,
     priority: context.priority,

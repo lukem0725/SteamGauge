@@ -31,8 +31,10 @@ import "server-only";
 
 import { isItadConfigured } from "@/lib/itad/client";
 import type { CacheMeta, CachedResult } from "@/lib/steam/cached-fetch";
+import type { ReviewSummary } from "@/lib/steam/reviews";
 import {
   getAppDetails,
+  getAppReviews,
   getAppStoreMeta,
   getCurrentPlayers,
   getItadAppPrices,
@@ -45,7 +47,7 @@ import { DEFAULT_COUNTRY_CODE, appIdSchema } from "@/lib/validation";
 
 export type InsightsMode = "full" | "card";
 
-export type InsightsSection = "players" | "metadata" | "genres" | "prices";
+export type InsightsSection = "players" | "metadata" | "genres" | "prices" | "reviews";
 
 export interface GameInsights {
   readonly appid: number;
@@ -65,6 +67,12 @@ export interface GameInsights {
   readonly players: { readonly count: number; readonly asOf: string } | null;
   /** Prices at every store ITAD tracks. Only in "full" mode with an ITAD key. */
   readonly prices: ItadAppPriceData | null;
+  /**
+   * Steam's review summary: label ("Very Positive"), share positive and the
+   * total count, as on the store page (Steam purchasers, every language).
+   * Only in "full" mode (v1.11); null in "card" mode or when Steam has none.
+   */
+  readonly reviews: ReviewSummary | null;
   /** Sections that could not be loaded this time (shown as "unavailable"). */
   readonly unavailable: readonly InsightsSection[];
 }
@@ -98,12 +106,16 @@ export async function buildGameInsights(
   const cc = DEFAULT_COUNTRY_CODE;
   const wantPrices = mode === "full" && isItadConfigured();
 
-  const [players, meta, tags, details, prices] = await Promise.allSettled([
+  const wantReviews = mode === "full";
+
+  const [players, meta, tags, details, prices, reviews] = await Promise.allSettled([
     getCurrentPlayers(id, context),
     getAppStoreMeta(id, cc, context),
     getSteamTags(context),
     getAppDetails(id, cc, context).then((r) => (r.status === "ok" ? r.data : null)),
     wantPrices ? getItadAppPrices(id, cc, context) : Promise.resolve(null),
+    // Cached per app for 3 days and shared with the Deals review fill-in.
+    wantReviews ? getAppReviews(id, context) : Promise.resolve(null),
   ]);
 
   const unavailable: InsightsSection[] = [];
@@ -124,6 +136,7 @@ export async function buildGameInsights(
   const app: AppDetails | null = details.status === "fulfilled" ? details.value : null;
   if (details.status === "rejected") unavailable.push("genres");
   const priceData = wantPrices ? ok(prices, "prices") : null;
+  const reviewData = wantReviews ? ok(reviews, "reviews") : null;
 
   const meta0: CacheMeta =
     metas.length > 0
@@ -152,6 +165,7 @@ export async function buildGameInsights(
           ? { count: playerData.count, asOf: players.value.meta.fetchedAt }
           : null,
       prices: priceData,
+      reviews: reviewData,
       unavailable,
     },
     meta: { ...meta0, stale: metas.some((m) => m.stale) },

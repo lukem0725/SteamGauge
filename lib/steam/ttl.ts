@@ -71,6 +71,8 @@ export interface TtlPolicy {
  * | itadAppPrices        | 1 h    | 24 h  | ITAD lookup + prices at every store     |
  * | storeSearch          | 24 h   | 7 d   | Storefront storesearch + GetItems       |
  * | itadId               | 30 d   | 90 d  | ITAD lookup (Steam AppID -> ITAD id)    |
+ * | libraryStore         | 12 h   | 3 d   | GetItems for a whole library (+ tags)   |
+ * | itadPlayers          | 1 h    | 24 h  | ITAD games/info: player peaks           |
  */
 export const TTL = {
   playerSummary:      { freshSeconds: 5 * MINUTE,  staleSeconds: 24 * HOUR, upstream: "webapi", scope: "player" },
@@ -104,6 +106,13 @@ export const TTL = {
   // history refreshes for an expanded row skip the lookup call (v1.9); the
   // Deals and Wishlist refreshes fill it for every app they look up.
   itadId:             { freshSeconds: 30 * DAY,    staleSeconds: 90 * DAY,  upstream: "itad",   scope: "global" },
+  // Art, release date, price and tags for every owned game (v1.10): the
+  // Dashboard's sorts, tag filter and detailed cards. Prices move with
+  // sales, so half a day; the rest barely changes.
+  libraryStore:       { freshSeconds: 12 * HOUR,   staleSeconds: 3 * DAY,   upstream: "webapi", scope: "player" },
+  // ITAD's 24-hour, 7-day and all-time player peaks for the game page's stat
+  // cards (v1.11.1). The live count itself still comes from Steam.
+  itadPlayers:        { freshSeconds: 1 * HOUR,    staleSeconds: 24 * HOUR, upstream: "itad",   scope: "global" },
 } as const satisfies Record<string, TtlPolicy>;
 
 export type SteamResource = keyof typeof TTL;
@@ -210,6 +219,10 @@ export const cacheKey = {
   // The term is already normalised (lib/title-search.ts): lowercase a-z 0-9 and spaces.
   storeSearch: (cc: string, term: string) => `search:${cc.toLowerCase()}:${term}`,
   itadId: (appid: number) => `app:${appid}:itad-id`,
+  itadPlayers: (appid: number) => `app:${appid}:itad-players`,
+  // The appid list is part of the input, so a purchase produces a new entry.
+  libraryStore: (steamid: string, cc: string, appidsCsv: string) =>
+    `player:${steamid}:library-store:${cc.toLowerCase()}:${fnv1a(appidsCsv)}`,
 } as const satisfies Record<SteamResource, (...args: never[]) => string>;
 
 /** Short, stable, non-cryptographic hash for cache keys (FNV-1a, 32-bit). */

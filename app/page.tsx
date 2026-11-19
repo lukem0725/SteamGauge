@@ -11,6 +11,7 @@ import type { Metadata, Viewport } from "next";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
+import { SiteFooter } from "@/components/footer";
 import { getSessionUser } from "@/lib/auth/session";
 import { POST_LOGIN_PATH, SESSION_COOKIE } from "@/lib/auth/shared";
 
@@ -87,18 +88,7 @@ export default async function LandingPage({
         </p>
       </main>
 
-      <footer className="px-4 pb-6 text-center text-xs leading-relaxed text-slate-600">
-        SteamGauge is not affiliated with Valve.{" "}
-        <a
-          href="https://steampowered.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="underline decoration-slate-700 underline-offset-2 hover:text-slate-400"
-        >
-          Powered by Steam
-        </a>
-        .
-      </footer>
+      <SiteFooter />
     </div>
   );
 }

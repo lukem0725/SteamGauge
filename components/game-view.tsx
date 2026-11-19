@@ -27,6 +27,8 @@ import {
   useGameInsights,
 } from "@/components/game-insights";
 import { pageContainer } from "@/components/layout-width";
+import { PlayerHistoryPanel } from "@/components/player-history";
+import { ReviewBadge } from "@/components/review-badge";
 import {
   StatePanel,
   describeWishlistAddError,
@@ -36,6 +38,7 @@ import {
 } from "@/components/ui-kit";
 import { apiGet, apiSend } from "@/lib/api/client";
 import type { AppDetails } from "@/lib/steam/endpoints";
+import type { ReviewSummary } from "@/lib/steam/reviews";
 
 export function GameView({ appid }: { appid: number }) {
   const details = useQuery({
@@ -82,7 +85,17 @@ export function GameView({ appid }: { appid: number }) {
           </StatePanel>
         ) : (
           <>
-            <GameHeader app={app} />
+            <GameHeader
+              app={app}
+              reviews={insights.data?.status === "ok" ? insights.data.data.reviews : null}
+              reviewState={
+                insights.isPending
+                  ? "loading"
+                  : insights.data?.status === "ok" && !insights.data.data.unavailable.includes("reviews")
+                    ? "ready"
+                    : "unavailable"
+              }
+            />
             <section aria-label="Game details" className="mt-5 rounded-3xl border border-slate-800 bg-surface p-4 sm:p-6">
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <div className="min-w-0">
@@ -105,6 +118,13 @@ export function GameView({ appid }: { appid: number }) {
                   <PriceHistoryPanel appid={appid} eager />
                 </div>
               )}
+              {/* Concurrent players, directly below price history (v1.11). */}
+              <div className="mt-6 border-t border-slate-800 pt-4">
+                <PlayerHistoryPanel
+                  appid={appid}
+                  fallbackCurrent={insights.data?.status === "ok" ? insights.data.data.players : null}
+                />
+              </div>
             </section>
           </>
         )}
@@ -113,7 +133,15 @@ export function GameView({ appid }: { appid: number }) {
   );
 }
 
-function GameHeader({ app }: { app: AppDetails }) {
+function GameHeader({
+  app,
+  reviews,
+  reviewState,
+}: {
+  app: AppDetails;
+  reviews: ReviewSummary | null;
+  reviewState: "loading" | "ready" | "unavailable";
+}) {
   return (
     <header className="overflow-hidden rounded-3xl border border-slate-800 bg-surface">
       <div className="flex flex-col gap-5 p-4 sm:flex-row sm:p-6">
@@ -139,6 +167,10 @@ function GameHeader({ app }: { app: AppDetails }) {
           {app.shortDescription ? (
             <p className="mt-2 line-clamp-3 max-w-3xl text-sm leading-relaxed text-slate-300">{app.shortDescription}</p>
           ) : null}
+          {/* Steam's rating, right under the title (v1.11). */}
+          <div className="mt-3">
+            <ReviewBadge summary={reviews} state={reviewState} />
+          </div>
           <div className="mt-auto flex flex-wrap items-end justify-between gap-4 pt-4">
             <PriceBlock app={app} />
             <div className="flex flex-wrap gap-2">

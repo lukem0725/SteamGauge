@@ -3,14 +3,21 @@
 /**
  * components/dashboard-view.tsx
  *
- * The signed-in dashboard: Library Health banner, Backlog Guardian deck, and
- * a Data Age ticker. Receives the verified user from the Server Component
+ * The signed-in dashboard: Library Health banner, the library list, and a
+ * Data Age ticker. Receives the verified user from the Server Component
  * (app/(app)/dashboard/page.tsx) and loads everything else through our own
  * API with TanStack Query (v5).
  *
- *   GET /api/players/[steamid]/games   library and playtime  (one request)
- *   GET /api/apps/[appid]              store price, per backlog card, only
- *                                      once that card scrolls into view
+ *   GET /api/players/[steamid]/games   library and playtime
+ *   GET /api/library/store             art, release date, price and tags for
+ *                                      every owned game (v1.10), after the
+ *                                      library; the list works without it
+ *
+ * The three stat cards choose a section (All games, Lifetime hours, Unplayed
+ * backlog). One toolbar applies to all three (v1.10): filter by title or tag,
+ * play status, tag, sort order, and Detailed / Compact cards. View and sort
+ * are remembered in this browser; the filters last until the page is left.
+ * Every game's title opens its SteamGauge page (/game/[appid]).
  *
  * Mobile-first: laid out for a 360px portrait screen, widening at sm/lg.
  *
@@ -18,37 +25,57 @@
  * at build time, so no server code reaches the browser bundle.
  */
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ChangeEvent } from "react";
 
 import {
-  DataAgeTicker,
-  ErrorState,
-  StatePanel,
-  VALUE_TONE,
-  ValueMeter,
-  formatMoney,
-  primaryButton,
-  secondaryButton,
-  useInViewOnce,
-} from "@/components/ui-kit";
+  CompactGameRow,
+  DetailedGameCard,
+  ValueIndicator,
+  type StoreState,
+  type ValueState,
+} from "@/components/game-card";
+import { DataAgeTicker, ErrorState, StatePanel, primaryButton, secondaryButton } from "@/components/ui-kit";
 import { pageContainer } from "@/components/layout-width";
 import { TitleFilter } from "@/components/title-filter";
 import { apiGet } from "@/lib/api/client";
 import type { SessionUser } from "@/lib/auth/session";
+import {
+  DEFAULT_CONTROLS,
+  DEFAULT_LIBRARY_SORT,
+  LIBRARY_SORTS,
+  PLAY_STATUSES,
+  STORE_SORTS,
+  activeFilterCount,
+  applyControls,
+  isLibrarySort,
+  isLibraryView,
+  isPlayStatus,
+  sectionEntries,
+  tagCounts,
+  type LibraryControls,
+  type LibrarySection,
+  type LibrarySort,
+  type LibraryStorePayload,
+  type LibraryView,
+} from "@/lib/library-view";
 import type { CacheMeta } from "@/lib/steam/cached-fetch";
-import type { AppDetails, OwnedGame, OwnedGames } from "@/lib/steam/endpoints";
-import { matchesTitle } from "@/lib/title-search";
-import { costPerHour, rateValue, simulatedHoursToBeat } from "@/lib/value";
+import type { OwnedGame, OwnedGames } from "@/lib/steam/endpoints";
+import { simulatedHoursToBeat } from "@/lib/value";
 
 // Re-exported for tests and previews.
-export { simulatedHoursToBeat };
+export { simulatedHoursToBeat, ValueIndicator };
+export type { ValueState };
 
 // =============================================================================
 // Configuration
 // =============================================================================
 
-/** Games rendered per "Show more" step. Backlog cards each make one lazy price lookup. */
-const PAGE_STEP = 24;
+/** Games rendered per "Show more" step, by card size. */
+const PAGE_STEP: Record<LibraryView, number> = { detailed: 24, compact: 60 };
+
+/** This browser remembers the card size and sort order (not the filters). */
+const VIEW_STORAGE_KEY = "steamgauge.dashboard.view";
+const SORT_STORAGE_KEY = "steamgauge.dashboard.sort";
 
 /** After a stale answer, re-check this many times for the refreshed data. */
 const STALE_RECHECK_LIMIT = 2;
@@ -77,7 +104,7 @@ export function DashboardView({ user }: DashboardViewProps) {
  *   playtime  every owned game, most played first
  *   backlog   games with exactly 0 minutes played, A to Z (the default)
  */
-export type LibraryFilter = "all" | "playtime" | "backlog";
+export type LibraryFilter = LibrarySection;
 
 function Dashboard({ user }: DashboardViewProps) {
   const [filter, setFilter] = useState<LibraryFilter>("backlog");
@@ -99,6 +126,21 @@ function Dashboard({ user }: DashboardViewProps) {
   });
 
   const result = library.data;
+  const hasGames = result?.status === "ok" && result.data.gameCount > 0;
+
+  // Store data for the whole library (art, release date, price, tags). The
+  // list shows at once; sorts and filters that need this data switch on
+  // when it arrives.
+  const store = useQuery({
+    queryKey: ["library", "store", user.steamid],
+    queryFn: ({ signal }) => apiGet<LibraryStorePayload>("/api/library/store", signal),
+    enabled: hasGames,
+    // The server keeps it fresh for 12 hours.
+    staleTime: 30 * 60_000,
+    retry: false,
+  });
+  const storePayload = store.data?.status === "ok" ? store.data.data : null;
+  const storeState: StoreState = storePayload ? "ready" : store.isPending ? "loading" : "unavailable";
 
   return (
     <div className="bg-page text-slate-100 antialiased">
@@ -124,7 +166,13 @@ function Dashboard({ user }: DashboardViewProps) {
                   selected={filter}
                   onSelect={setFilter}
                 />
-                <LibraryPanel games={result.data.games} filter={filter} />
+                <LibraryPanel
+                  games={result.data.games}
+                  filter={filter}
+                  store={storePayload}
+                  storeState={storeState}
+                  onRetryStore={() => void store.refetch()}
+                />
               </>
             )
           ) : (
@@ -368,59 +416,108 @@ function isUnplayed(game: OwnedGame): boolean {
 }
 
 // =============================================================================
-// Library list (driven by the stat cards)
+// Library list (section from the stat cards, controls shared by all three)
 // =============================================================================
 
-const byName = (a: OwnedGame, b: OwnedGame) =>
-  a.name.localeCompare(b.name, "en", { sensitivity: "base" });
+/** Heading and wording for each section. Exported for tests. */
+export const SECTION_COPY: Record<LibrarySection, { eyebrow: string; title: string; noun: string; order: string }> = {
+  all: { eyebrow: "Library", title: "All games", noun: "games", order: "A to Z" },
+  playtime: { eyebrow: "Lifetime hours", title: "Most played", noun: "games", order: "by playtime" },
+  backlog: { eyebrow: "Backlog guardian", title: "Owned, never played", noun: "unplayed games", order: "A to Z" },
+};
 
-/** The games, title and wording for each filter. Exported for tests. */
-export function selectLibrary(games: readonly OwnedGame[], filter: LibraryFilter) {
-  switch (filter) {
-    case "all":
-      return {
-        games: [...games].sort(byName),
-        eyebrow: "Library",
-        title: "All games, A to Z",
-        noun: "games",
-      };
-    case "playtime":
-      return {
-        games: [...games].sort((a, b) => b.playtimeMinutes - a.playtimeMinutes || byName(a, b)),
-        eyebrow: "Library",
-        title: "Most played",
-        noun: "games",
-      };
-    case "backlog":
-      return {
-        games: games.filter(isUnplayed).sort(byName),
-        eyebrow: "Backlog guardian",
-        title: "Owned, never played",
-        noun: "unplayed games",
-      };
-  }
+/**
+ * A choice remembered in this browser. The first render uses the default (as
+ * the server did), then the stored value, so hydration always matches.
+ * Storage that is blocked or full is ignored.
+ */
+function useStoredChoice<T extends string>(
+  key: string,
+  isValid: (value: unknown) => value is T,
+  fallback: T,
+): [T, (next: T) => void] {
+  const [value, setValue] = useState<T>(fallback);
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(key);
+      if (isValid(stored)) setValue(stored);
+    } catch {
+      // Storage unavailable: keep the default.
+    }
+  }, [key, isValid]);
+  const choose = useCallback(
+    (next: T) => {
+      setValue(next);
+      try {
+        window.localStorage.setItem(key, next);
+      } catch {
+        // Not remembered; still applied for this visit.
+      }
+    },
+    [key],
+  );
+  return [value, choose];
 }
 
-function LibraryPanel({ games, filter }: { games: readonly OwnedGame[]; filter: LibraryFilter }) {
-  const view = selectLibrary(games, filter);
-  const [limit, setLimit] = useState(PAGE_STEP);
+function LibraryPanel({
+  games,
+  filter: section,
+  store,
+  storeState,
+  onRetryStore,
+}: {
+  games: readonly OwnedGame[];
+  filter: LibrarySection;
+  store: LibraryStorePayload | null;
+  storeState: StoreState;
+  onRetryStore: () => void;
+}) {
+  const copy = SECTION_COPY[section];
+
   // Kept when switching between the three stat cards.
-  const [query, setQuery] = useState("");
-  const trimmed = query.trim();
+  const [text, setText] = useState("");
+  const [status, setStatus] = useState(DEFAULT_CONTROLS.status);
+  const [tag, setTag] = useState("");
+  const [sort, setSort] = useStoredChoice<LibrarySort>(SORT_STORAGE_KEY, isLibrarySort, DEFAULT_LIBRARY_SORT);
+  const [view, setView] = useStoredChoice<LibraryView>(VIEW_STORAGE_KEY, isLibraryView, "detailed");
 
-  // A new list or a new filter starts again from the top.
-  const [shownKey, setShownKey] = useState(`${filter}|${trimmed}`);
-  if (shownKey !== `${filter}|${trimmed}`) {
-    setShownKey(`${filter}|${trimmed}`);
-    setLimit(PAGE_STEP);
+  // Sorts by price or release date wait for store data; until then the
+  // section's own order is used.
+  const effectiveSort: LibrarySort = STORE_SORTS.has(sort) && !store ? "section" : sort;
+  const controls: LibraryControls = { text, status, tag, sort: effectiveSort };
+
+  const entries = useMemo(() => sectionEntries(games, section, store), [games, section, store]);
+  const matching = useMemo(
+    () => applyControls(entries, controls, section),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- controls is rebuilt from these each render
+    [entries, text, status, tag, effectiveSort, section],
+  );
+  const tags = useMemo(() => tagCounts(entries), [entries]);
+  const filtersOn = activeFilterCount(controls, section);
+
+  // Any change of section, filter, sort or card size starts again from the top.
+  const step = PAGE_STEP[view];
+  const [limit, setLimit] = useState(step);
+  const listKey = `${section}|${text.trim()}|${status}|${tag}|${effectiveSort}|${view}`;
+  const [shownKey, setShownKey] = useState(listKey);
+  if (shownKey !== listKey) {
+    setShownKey(listKey);
+    setLimit(step);
   }
-
-  // Playtime rank is the game's place in the whole list, kept when filtering.
-  const ranked = view.games.map((game, index) => ({ game, rank: index + 1 }));
-  const matching = trimmed ? ranked.filter(({ game }) => matchesTitle(trimmed, game.name)) : ranked;
   const shown = matching.slice(0, limit);
   const total = matching.length;
-  const isBacklog = filter === "backlog";
+
+  const clearFilters = () => {
+    setText("");
+    setStatus("any");
+    setTag("");
+  };
+  const showRank = section === "playtime";
+  const isBacklog = section === "backlog";
+  const orderLabel =
+    effectiveSort === "section"
+      ? copy.order
+      : (LIBRARY_SORTS.find((option) => option.value === effectiveSort)?.label ?? "").toLowerCase();
 
   return (
     <section id="library-list" aria-labelledby="library-list-heading">
@@ -431,44 +528,70 @@ function LibraryPanel({ games, filter }: { games: readonly OwnedGame[]; filter: 
               isBacklog ? "text-amber-400" : "text-steam-400"
             }`}
           >
-            {view.eyebrow}
+            {copy.eyebrow}
           </p>
           <h2 id="library-list-heading" className="mt-1 text-lg font-semibold text-slate-50">
-            {view.title}
+            {copy.title}
+            <span className="ml-2 text-sm font-normal text-slate-400">{orderLabel}</span>
           </h2>
         </div>
         <p aria-live="polite" className="shrink-0 text-right text-xs text-slate-500">
-          <span className="font-semibold tabular-nums text-slate-300">
-            {wholeNumber.format(total)}
-          </span>{" "}
-          {trimmed ? `of ${wholeNumber.format(view.games.length)} ` : ""}
-          {(trimmed ? view.games.length : total) === 1 ? view.noun.replace(/s$/, "") : view.noun}
-          {trimmed ? " match" : ""}
-          {total > shown.length ? (
-            <span className="block">Showing {wholeNumber.format(shown.length)}</span>
-          ) : null}
+          <span className="font-semibold tabular-nums text-slate-300">{wholeNumber.format(total)}</span>{" "}
+          {filtersOn > 0 ? `of ${wholeNumber.format(entries.length)} ` : ""}
+          {(filtersOn > 0 ? entries.length : total) === 1 ? copy.noun.replace(/s$/, "") : copy.noun}
+          {filtersOn > 0 ? " match" : ""}
+          {total > shown.length ? <span className="block">Showing {wholeNumber.format(shown.length)}</span> : null}
         </p>
       </div>
 
-      <TitleFilter
-        value={query}
-        onChange={setQuery}
-        label={`Filter ${view.title.toLowerCase()} by title`}
-        placeholder="Filter your games by title"
-        className="mt-4 w-full sm:max-w-sm"
+      <LibraryToolbar
+        section={section}
+        text={text}
+        onText={setText}
+        status={status}
+        onStatus={setStatus}
+        tag={tag}
+        onTag={setTag}
+        tags={tags}
+        sort={sort}
+        onSort={setSort}
+        view={view}
+        onView={setView}
+        storeState={storeState}
+        filtersOn={filtersOn}
+        onClear={clearFilters}
       />
 
-      {total === 0 && trimmed ? (
+      {storeState === "unavailable" ? (
+        <p role="status" className="mt-3 text-xs text-slate-400">
+          Store details (art, prices, release dates, tags) could not be loaded, so those sorts and
+          the tag filter are off.{" "}
+          <button
+            type="button"
+            onClick={onRetryStore}
+            className="font-medium text-steam-300 underline underline-offset-2 hover:text-steam-200"
+          >
+            Try again
+          </button>
+        </p>
+      ) : store && store.covered < store.total ? (
+        <p className="mt-3 text-xs text-slate-500">
+          Store details cover your {wholeNumber.format(store.covered)} most-played games of{" "}
+          {wholeNumber.format(store.total)}.
+        </p>
+      ) : null}
+
+      {total === 0 && filtersOn > 0 ? (
         <div className="mt-4 rounded-2xl border border-slate-800 bg-surface p-6 text-center">
-          <p className="text-base font-medium text-slate-200">No games here match &ldquo;{trimmed}&rdquo;</p>
+          <p className="text-base font-medium text-slate-200">No games here match these filters</p>
           <p className="mt-1 text-sm text-slate-400">
-            This filters only your library.{" "}
+            Filters apply only to your library.{" "}
             <button
               type="button"
-              onClick={() => setQuery("")}
+              onClick={clearFilters}
               className="font-medium text-steam-300 underline underline-offset-2 hover:text-steam-200"
             >
-              Clear the filter
+              Clear the filters
             </button>
           </p>
         </div>
@@ -481,287 +604,249 @@ function LibraryPanel({ games, filter }: { games: readonly OwnedGame[]; filter: 
         </div>
       ) : (
         <>
-          {isBacklog ? (
+          {view === "detailed" ? (
             <ul
-              aria-label={view.title}
+              aria-label={copy.title}
               className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
             >
-              {shown.map(({ game }) => (
-                <BacklogCard key={game.appid} game={game} />
+              {shown.map(({ game, rank, store: item }) => (
+                <DetailedGameCard
+                  key={game.appid}
+                  game={game}
+                  rank={rank}
+                  showRank={showRank}
+                  store={item}
+                  storeState={storeState}
+                />
               ))}
             </ul>
           ) : (
-            <ol
-              aria-label={view.title}
+            <ul
+              aria-label={copy.title}
               className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4"
             >
-              {shown.map(({ game, rank }) => (
-                <GameRow key={game.appid} game={game} rank={filter === "playtime" ? rank : null} />
+              {shown.map(({ game, rank, store: item }) => (
+                <CompactGameRow
+                  key={game.appid}
+                  game={game}
+                  rank={rank}
+                  showRank={showRank}
+                  store={item}
+                  storeState={storeState}
+                />
               ))}
-            </ol>
+            </ul>
           )}
 
           {total > shown.length ? (
             <div className="mt-4 flex justify-center">
-              <button
-                type="button"
-                onClick={() => setLimit((current) => current + PAGE_STEP)}
-                className={secondaryButton}
-              >
-                Show {Math.min(PAGE_STEP, total - shown.length)} more
-                <span className="sr-only"> of {view.title}</span>
+              <button type="button" onClick={() => setLimit((current) => current + step)} className={secondaryButton}>
+                Show {wholeNumber.format(Math.min(step, total - shown.length))} more
+                <span className="sr-only"> of {copy.title}</span>
               </button>
             </div>
           ) : null}
 
-          {isBacklog ? (
-            <p className="mt-3 text-xs leading-relaxed text-slate-500">
-              Price is the current US store price, not what you paid. Length is a simulated
-              placeholder, not real completion data.
-            </p>
-          ) : null}
+          <p className="mt-3 text-xs leading-relaxed text-slate-500">
+            Prices are current US store prices, not what you paid.
+            {view === "detailed" && shown.some(({ game }) => game.playtimeMinutes === 0)
+              ? " Game length in the value meter is a simulated placeholder, not real completion data."
+              : ""}
+          </p>
         </>
       )}
     </section>
   );
 }
 
-const hoursFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
+const selectClass =
+  "min-h-10 w-full min-w-0 rounded-xl border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 focus-visible:border-steam-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400/40 disabled:cursor-not-allowed disabled:opacity-60";
 
-function formatPlaytime(minutes: number): string {
-  if (minutes === 0) return "Never played";
-  if (minutes < 60) return `${minutes} min`;
-  return `${hoursFormat.format(minutes / 60)} h`;
-}
+/** The controls shared by all three sections. */
+function LibraryToolbar({
+  section,
+  text,
+  onText,
+  status,
+  onStatus,
+  tag,
+  onTag,
+  tags,
+  sort,
+  onSort,
+  view,
+  onView,
+  storeState,
+  filtersOn,
+  onClear,
+}: {
+  section: LibrarySection;
+  text: string;
+  onText: (text: string) => void;
+  status: LibraryControls["status"];
+  onStatus: (status: LibraryControls["status"]) => void;
+  tag: string;
+  onTag: (tag: string) => void;
+  tags: readonly { name: string; count: number }[];
+  sort: LibrarySort;
+  onSort: (sort: LibrarySort) => void;
+  view: LibraryView;
+  onView: (view: LibraryView) => void;
+  storeState: StoreState;
+  filtersOn: number;
+  onClear: () => void;
+}) {
+  const id = useId();
+  const isBacklog = section === "backlog";
+  const storeReady = storeState === "ready";
+  // A chosen tag stays listed even if it is not in this section.
+  const tagOptions = tag && !tags.some((option) => option.name === tag) ? [{ name: tag, count: 0 }, ...tags] : tags;
 
-/** A compact row for the "all" and "playtime" lists. No network requests. */
-function GameRow({ game, rank }: { game: OwnedGame; rank: number | null }) {
   return (
-    <li className="relative flex min-h-14 items-center gap-3 rounded-xl border border-slate-800 bg-surface-raised px-3 py-2">
-      {rank !== null ? (
-        <span className="w-7 shrink-0 text-right text-xs font-semibold tabular-nums text-slate-500">
-          {rank}
-        </span>
-      ) : null}
-      {game.iconUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={game.iconUrl}
-          alt=""
-          width={32}
-          height={32}
-          loading="lazy"
-          className="h-8 w-8 shrink-0 rounded"
+    <div className="mt-4 rounded-2xl border border-slate-800 bg-chrome p-3 sm:p-4">
+      {/* Phones: search on its own row, then two controls per row. */}
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-x-3 gap-y-3 lg:grid-cols-[minmax(16rem,2fr)_repeat(3,minmax(0,1fr))_auto] lg:items-end">
+        <TitleFilter
+          value={text}
+          onChange={onText}
+          label="Filter your games by title or tag"
+          placeholder="Filter by title or tag"
+          className="col-span-2 w-full lg:col-span-1"
         />
-      ) : (
-        <span
-          aria-hidden="true"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-slate-800 text-xs font-semibold text-slate-400"
-        >
-          {game.name.slice(0, 1).toUpperCase()}
-        </span>
-      )}
-      <div className="min-w-0 flex-1">
-        <a
-          href={`https://store.steampowered.com/app/${game.appid}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="block truncate text-sm font-medium text-slate-100 after:absolute after:inset-0 after:rounded-xl hover:text-white focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-steam-400"
-          title={game.name}
-        >
-          {game.name}
-          <span className="sr-only"> (opens Steam in a new tab)</span>
-        </a>
-        <p className="text-xs text-slate-500">
-          {game.lastPlayedAt
-            ? `Last played ${new Date(game.lastPlayedAt).toLocaleDateString("en-US", {
-                month: "short",
-                year: "numeric",
-              })}`
-            : "No play date recorded"}
-        </p>
-      </div>
-      <span
-        className={`shrink-0 text-sm font-semibold tabular-nums ${
-          game.playtimeMinutes === 0 ? "text-amber-300" : "text-slate-200"
-        }`}
-      >
-        {formatPlaytime(game.playtimeMinutes)}
-      </span>
-    </li>
-  );
-}
 
-function BacklogCard({ game }: { game: OwnedGame }) {
-  const [ref, inView] = useInViewOnce<HTMLLIElement>();
-
-  // One store lookup per card, and only once the card is actually on screen.
-  // The server shares each answer between all users for 24 hours.
-  const details = useQuery({
-    queryKey: ["app", game.appid, "details"],
-    queryFn: ({ signal }) => apiGet<AppDetails>(`/api/apps/${game.appid}`, signal),
-    enabled: inView,
-    staleTime: 60 * 60_000,
-    // If the store budget is spent, show "unavailable" instead of piling on.
-    retry: false,
-  });
-
-  const app = details.data?.status === "ok" ? details.data.data : null;
-  const hours = simulatedHoursToBeat(game.appid);
-
-  return (
-    <li
-      ref={ref}
-      // `relative` keeps the visually hidden link text inside the card, so
-      // it can never widen the page on phones.
-      className="relative flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-surface-raised"
-    >
-      <div className="relative aspect-[460/215] w-full bg-slate-900">
-        {app?.headerImage ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={app.headerImage}
-            alt=""
-            loading="lazy"
-            decoding="async"
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#1e2836,#121822)]">
-            {game.iconUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={game.iconUrl}
-                alt=""
-                width={32}
-                height={32}
-                loading="lazy"
-                className="h-8 w-8 rounded"
-              />
-            ) : (
-              <span aria-hidden="true" className="text-2xl font-semibold text-slate-600">
-                {game.name.slice(0, 1).toUpperCase()}
-              </span>
-            )}
-          </div>
-        )}
-        <span className="absolute left-2 top-2 rounded-full bg-slate-950/80 px-2 py-0.5 text-[11px] font-medium text-amber-300 ring-1 ring-amber-400/30">
-          0h played
-        </span>
-      </div>
-
-      <div className="flex flex-1 flex-col p-4">
-        <h3 className="truncate text-sm font-semibold text-slate-100" title={game.name}>
-          {game.name}
-        </h3>
-
-        <div className="mt-3 flex-1">
-          <ValueIndicator
-            hours={hours}
-            state={
-              !inView || details.isPending
-                ? { kind: "loading" }
-                : app
-                  ? app.isFree || !app.price
-                    ? app.isFree
-                      ? { kind: "free" }
-                      : { kind: "unavailable" }
-                    : { kind: "priced", price: app.price }
-                  : { kind: "unavailable" }
-            }
-          />
+        <div className="min-w-0">
+          <label htmlFor={`${id}-status`} className="mb-1 block text-xs font-medium text-slate-400">
+            Play status
+          </label>
+          <select
+            id={`${id}-status`}
+            value={isBacklog ? "unplayed" : status}
+            disabled={isBacklog}
+            title={isBacklog ? "The backlog shows unplayed games only" : undefined}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+              if (isPlayStatus(event.target.value)) onStatus(event.target.value);
+            }}
+            className={selectClass}
+          >
+            {PLAY_STATUSES.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </div>
 
-        <a
-          href={`https://store.steampowered.com/app/${game.appid}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-4 inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-3 text-sm font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400"
-        >
-          View on Steam
-          <span className="sr-only"> (opens in a new tab): {game.name}</span>
-        </a>
+        <div className="min-w-0">
+          <label htmlFor={`${id}-tag`} className="mb-1 block text-xs font-medium text-slate-400">
+            Genre or tag
+          </label>
+          <select
+            id={`${id}-tag`}
+            value={tag}
+            disabled={!storeReady || tagOptions.length === 0}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) => onTag(event.target.value)}
+            className={selectClass}
+          >
+            <option value="">
+              {storeState === "loading" ? "Loading tags…" : storeReady ? "Any tag" : "Tags unavailable"}
+            </option>
+            {tagOptions.map((option) => (
+              <option key={option.name} value={option.name}>
+                {option.name}
+                {option.count > 0 ? ` (${wholeNumber.format(option.count)})` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="min-w-0">
+          <label htmlFor={`${id}-sort`} className="mb-1 block text-xs font-medium text-slate-400">
+            Sort by
+          </label>
+          <select
+            id={`${id}-sort`}
+            value={sort}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+              if (isLibrarySort(event.target.value)) onSort(event.target.value);
+            }}
+            className={selectClass}
+          >
+            {LIBRARY_SORTS.map((option) => (
+              <option key={option.value} value={option.value} disabled={STORE_SORTS.has(option.value) && !storeReady}>
+                {option.label}
+                {STORE_SORTS.has(option.value) && storeState === "loading" ? " (loading…)" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="min-w-0">
+          <span id={`${id}-view`} className="mb-1 block text-xs font-medium text-slate-400">
+            Card size
+          </span>
+          <div
+            role="group"
+            aria-labelledby={`${id}-view`}
+            className="inline-flex w-full rounded-xl border border-slate-700 bg-slate-900 p-0.5 lg:w-auto"
+          >
+            {(
+              [
+                ["detailed", "Detailed", <GridIcon key="g" />],
+                ["compact", "Compact", <ListIcon key="l" />],
+              ] as const
+            ).map(([value, label, icon]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={view === value}
+                title={`${label} cards`}
+                onClick={() => onView(value)}
+                className={`inline-flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 text-sm font-medium sm:px-3 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400 lg:flex-none ${
+                  view === value ? "bg-steam-400 text-slate-950" : "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+                }`}
+              >
+                {icon}
+                {/* Icon-only on phones, where the column is narrow; still named for screen readers. */}
+                <span className="sr-only sm:not-sr-only">{label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
-    </li>
+
+      {filtersOn > 0 ? (
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={onClear}
+            className="text-xs font-medium text-steam-300 underline underline-offset-2 hover:text-steam-200"
+          >
+            Clear {filtersOn === 1 ? "filter" : `${filtersOn} filters`}
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
-// -----------------------------------------------------------------------------
-// Bang-for-your-buck indicator
-// -----------------------------------------------------------------------------
-
-export type ValueState =
-  | { kind: "loading" }
-  | { kind: "unavailable" }
-  | { kind: "free" }
-  | { kind: "priced"; price: NonNullable<AppDetails["price"]> };
-
-/** Exported so it can be rendered on its own in tests and previews. */
-export function ValueIndicator({ hours, state }: { hours: number; state: ValueState }) {
-  const lengthNote = (
-    <p className="mt-1 text-xs text-slate-500">
-      ~{hours}h length <span className="text-slate-600">(simulated)</span>
-    </p>
-  );
-
-  if (state.kind === "loading") {
-    return (
-      <div aria-busy="true" aria-label="Loading price">
-        <div className="h-4 w-24 animate-pulse rounded bg-slate-800" />
-        <div className="mt-2 h-1.5 w-full animate-pulse rounded-full bg-slate-800" />
-        <div className="mt-2 h-3 w-32 animate-pulse rounded bg-slate-800" />
-      </div>
-    );
-  }
-
-  if (state.kind === "unavailable") {
-    return (
-      <div>
-        <p className="text-sm font-medium text-slate-400">Price unavailable</p>
-        <ValueMeter level={0} bar="bg-slate-700" />
-        {lengthNote}
-      </div>
-    );
-  }
-
-  if (state.kind === "free") {
-    return (
-      <div>
-        <p className="text-sm font-semibold text-steam-300">Free to play</p>
-        <ValueMeter level={4} bar="bg-steam-400" />
-        {lengthNote}
-      </div>
-    );
-  }
-
-  const { price } = state;
-  const perHour = costPerHour(price.final, hours);
-  const rating = rateValue(perHour);
-  const tone = VALUE_TONE[rating.level];
-
+function GridIcon() {
   return (
-    <div>
-      <div className="flex items-baseline justify-between gap-2">
-        <p className={`text-sm font-semibold ${tone.text}`}>{rating.label}</p>
-        <p className="text-sm tabular-nums text-slate-300">
-          {formatMoney(perHour, price.currency)}
-          <span className="text-slate-500">/hr</span>
-        </p>
-      </div>
-      <ValueMeter level={rating.level} bar={tone.bar} />
-      <p className="mt-2 text-xs text-slate-400">
-        Store price{" "}
-        <span className="font-medium tabular-nums text-slate-200">
-          {price.finalFormatted ?? formatMoney(price.final, price.currency)}
-        </span>
-        {price.discountPercent > 0 ? (
-          <span className="ml-1.5 rounded bg-steam-400/15 px-1 py-0.5 text-[11px] font-semibold text-steam-300">
-            -{price.discountPercent}%
-          </span>
-        ) : null}
-      </p>
-      {lengthNote}
-    </div>
+    <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="currentColor">
+      <rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1" />
+      <rect x="9" y="1.5" width="5.5" height="5.5" rx="1" />
+      <rect x="1.5" y="9" width="5.5" height="5.5" rx="1" />
+      <rect x="9" y="9" width="5.5" height="5.5" rx="1" />
+    </svg>
+  );
+}
+
+function ListIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="currentColor">
+      <rect x="1.5" y="2" width="13" height="2.5" rx="1" />
+      <rect x="1.5" y="6.75" width="13" height="2.5" rx="1" />
+      <rect x="1.5" y="11.5" width="13" height="2.5" rx="1" />
+    </svg>
   );
 }
 

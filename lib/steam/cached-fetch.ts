@@ -39,10 +39,12 @@ import {
   fetchItadAppPrices,
   fetchItadHistory,
   fetchItadId,
+  fetchItadPlayers,
   fetchSteamWishlistIds,
   fetchWishlistView,
 } from "./composites";
 import { storeMetaInput } from "./insights";
+import { fetchLibraryStore } from "./library-store";
 import { memoryCache, type MemoryRow } from "./memory-cache";
 import { fetchStoreSearch } from "./search";
 import {
@@ -301,6 +303,11 @@ const REQUESTS: { readonly [R in SteamResource]: (...args: KeyArgs<R>) => Reques
   itadAppPrices: (appid, cc) => composite((io) => fetchItadAppPrices(io, appid, cc)),
   storeSearch: (cc, term) => composite((io) => fetchStoreSearch(io, term, cc)),
   itadId: (appid) => composite((io) => fetchItadId(io, appid)),
+  itadPlayers: (appid) => composite((io) => fetchItadPlayers(io, appid)),
+  libraryStore: (_steamid, cc, appidsCsv) =>
+    composite((io) =>
+      fetchLibraryStore(io, appidsCsv === "" ? [] : appidsCsv.split(",").map(Number), cc),
+    ),
   appReviews: (appid) =>
     web("GetAppReviews", {
       input_json: JSON.stringify({
