@@ -6,7 +6,8 @@
  * at every store ITAD tracks. Built in lib/game-insights.ts from shared,
  * cached sources.
  *
- *   mode=full   An expanded Deals row (default): includes store prices.
+ *   mode=full   An expanded Deals row or the game page (default): includes
+ *               store prices, the review summary and ITAD's player peaks.
  *   mode=card   A Wishlist card: the same facts, genres included, without
  *               the store price list.
  *
@@ -29,6 +30,7 @@ import { takeUserQuota } from "@/lib/api/user-limit";
 import { getSessionUser } from "@/lib/auth/session";
 import { SESSION_COOKIE } from "@/lib/auth/shared";
 import { buildGameInsights } from "@/lib/game-insights";
+import { notePlayerInterest } from "@/lib/player-counts";
 import { appIdSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
@@ -63,6 +65,10 @@ export async function GET(
 
     const complete = result.status === "ok" && result.data.unavailable.length === 0;
     if (prefetch && !complete) return errorResponse("prefetch_declined", 503);
+
+    // A game's details were opened (not a hover guess): keep it on the
+    // hourly player sampler's list for 14 days. After the response; never throws.
+    if (modeParam === "full" && !prefetch) after(() => notePlayerInterest(appid.data));
 
     // Same for every user: a complete answer may be shared by the CDN.
     return resultResponse(result, complete ? sharedCacheControl(result.meta, INSIGHTS_CDN) : NO_SHARED_CACHE);

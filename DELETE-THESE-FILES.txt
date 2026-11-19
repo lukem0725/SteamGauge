@@ -1,0 +1,9 @@
+SteamGauge v1.12 removes these files. Delete them from your project (keep everything else):
+
+  components/player-history.tsx
+  lib/player-history.ts
+  app/api/apps/[appid]/players/route.ts      (and the now-empty players/ folder)
+
+Then copy the rest of this zip over your project, keeping the paths, and run:
+  npx tsc --noEmit
+  next build

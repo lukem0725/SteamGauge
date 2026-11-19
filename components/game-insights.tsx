@@ -177,6 +177,7 @@ export function GameFactsPanel({
   maxTags,
   maxFeatures,
   showFeatures = true,
+  showPlayers = true,
   preloadMargin = DEFAULT_PRELOAD_MARGIN,
 }: {
   appid: number;
@@ -190,6 +191,8 @@ export function GameFactsPanel({
   maxFeatures?: number;
   /** Show Steam's descriptors ("Single-player", ...). Default true. */
   showFeatures?: boolean;
+  /** Show the live player count. Default true; the game page shows it in its header instead. */
+  showPlayers?: boolean;
   /** IntersectionObserver rootMargin for lazy loading. */
   preloadMargin?: string;
 }) {
@@ -210,7 +213,7 @@ export function GameFactsPanel({
       ) : !data ? (
         <p className="mt-2 text-sm text-slate-500">Game details could not be loaded.</p>
       ) : (
-        <GameFacts data={data} maxTags={maxTags} maxFeatures={maxFeatures} showFeatures={showFeatures} />
+        <GameFacts data={data} maxTags={maxTags} maxFeatures={maxFeatures} showFeatures={showFeatures} showPlayers={showPlayers} />
       )}
     </div>
   );
@@ -221,11 +224,13 @@ export function GameFacts({
   maxTags,
   maxFeatures,
   showFeatures = true,
+  showPlayers = true,
 }: {
   data: GameInsights;
   maxTags?: number;
   maxFeatures?: number;
   showFeatures?: boolean;
+  showPlayers?: boolean;
 }) {
   // Deduplicate before limiting, so a repeated name never uses up a slot.
   const tags = limit(uniqueItems(data.tags), maxTags);
@@ -238,7 +243,7 @@ export function GameFacts({
 
   return (
     <div className="mt-2 space-y-3 text-sm">
-      <PlayersNow players={data.players} unavailable={data.unavailable.includes("players")} />
+      {showPlayers ? <PlayersNow players={data.players} unavailable={data.unavailable.includes("players")} /> : null}
 
       {rows.length > 0 ? (
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">

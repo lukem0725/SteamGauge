@@ -6,10 +6,12 @@
  * The game page (/game/[appid]), reached from the global search.
  *
  *   Header        Header image, title, release, Steam's short description,
+ *                 review badge, "Current In-Game Players" badge (v1.12),
  *                 current price, "View on Steam" and "Watch".
- *   Top row       About this game (live players, developer, publisher,
- *                 franchise, genres, tags, features) beside the price
- *                 breakdown (lows and every store's price, linked).
+ *   Top row       About this game (developer, publisher, franchise, genres,
+ *                 tags, features), then Player peaks (24-hour and all-time,
+ *                 from IsThereAnyDeal, v1.12), beside the price breakdown
+ *                 (lows and every store's price, linked).
  *   Bottom row    Full price history, full width.
  *
  * Data: GET /api/apps/[appid] (store details), GET /api/apps/[appid]/insights
@@ -27,7 +29,7 @@ import {
   useGameInsights,
 } from "@/components/game-insights";
 import { pageContainer } from "@/components/layout-width";
-import { PlayerHistoryPanel } from "@/components/player-history";
+import { LivePlayersBadge, PlayerPeaksPanel, type FigureState } from "@/components/player-metrics";
 import { ReviewBadge } from "@/components/review-badge";
 import {
   StatePanel,
@@ -37,6 +39,7 @@ import {
   secondaryButton,
 } from "@/components/ui-kit";
 import { apiGet, apiSend } from "@/lib/api/client";
+import type { GameInsights } from "@/lib/game-insights";
 import type { AppDetails } from "@/lib/steam/endpoints";
 import type { ReviewSummary } from "@/lib/steam/reviews";
 
@@ -87,6 +90,14 @@ export function GameView({ appid }: { appid: number }) {
           <>
             <GameHeader
               app={app}
+              players={insights.data?.status === "ok" ? insights.data.data.players : null}
+              playersState={
+                insights.isPending
+                  ? "loading"
+                  : insights.data?.status === "ok" && !insights.data.data.unavailable.includes("players")
+                    ? "ready"
+                    : "unavailable"
+              }
               reviews={insights.data?.status === "ok" ? insights.data.data.reviews : null}
               reviewState={
                 insights.isPending
@@ -99,7 +110,18 @@ export function GameView({ appid }: { appid: number }) {
             <section aria-label="Game details" className="mt-5 rounded-3xl border border-slate-800 bg-surface p-4 sm:p-6">
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <div className="min-w-0">
-                  <GameFactsPanel appid={appid} mode="full" insights={insights} maxFeatures={8} />
+                  {/* The live count is in the header badge, so the facts leave it out. */}
+                  <GameFactsPanel appid={appid} mode="full" insights={insights} maxFeatures={8} showPlayers={false} />
+                  <PlayerPeaksPanel
+                    peaks={insights.data?.status === "ok" ? insights.data.data.playerPeaks : null}
+                    state={
+                      insights.isPending
+                        ? "loading"
+                        : insights.data?.status === "ok" && !insights.data.data.unavailable.includes("playerPeaks")
+                          ? "ready"
+                          : "unavailable"
+                    }
+                  />
                 </div>
                 <div className="min-w-0">
                   {insights.isPending ? (
@@ -118,13 +140,6 @@ export function GameView({ appid }: { appid: number }) {
                   <PriceHistoryPanel appid={appid} eager />
                 </div>
               )}
-              {/* Concurrent players, directly below price history (v1.11). */}
-              <div className="mt-6 border-t border-slate-800 pt-4">
-                <PlayerHistoryPanel
-                  appid={appid}
-                  fallbackCurrent={insights.data?.status === "ok" ? insights.data.data.players : null}
-                />
-              </div>
             </section>
           </>
         )}
@@ -135,10 +150,14 @@ export function GameView({ appid }: { appid: number }) {
 
 function GameHeader({
   app,
+  players,
+  playersState,
   reviews,
   reviewState,
 }: {
   app: AppDetails;
+  players: GameInsights["players"];
+  playersState: FigureState;
   reviews: ReviewSummary | null;
   reviewState: "loading" | "ready" | "unavailable";
 }) {
@@ -167,9 +186,10 @@ function GameHeader({
           {app.shortDescription ? (
             <p className="mt-2 line-clamp-3 max-w-3xl text-sm leading-relaxed text-slate-300">{app.shortDescription}</p>
           ) : null}
-          {/* Steam's rating, right under the title (v1.11). */}
-          <div className="mt-3">
+          {/* Steam's rating and the live player count, right under the title (v1.11, v1.12). */}
+          <div className="mt-3 flex flex-col items-start gap-2">
             <ReviewBadge summary={reviews} state={reviewState} />
+            <LivePlayersBadge players={players} state={playersState} />
           </div>
           <div className="mt-auto flex flex-wrap items-end justify-between gap-4 pt-4">
             <PriceBlock app={app} />

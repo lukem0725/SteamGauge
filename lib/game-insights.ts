@@ -10,10 +10,13 @@
  *   Tag names           IStoreService/GetTagList    1 week fresh, one entry for all
  *   Genres, descriptors Storefront appdetails       1 day fresh, Storefront
  *   Prices everywhere   ITAD lookup + prices        1 hour fresh, ITAD
+ *   Player peaks        ITAD games/info players     1 hour fresh, ITAD (v1.12)
  *
  * Two modes:
  *
- *   "full"  An expanded Deals row. Adds ITAD's prices at every store.
+ *   "full"  An expanded Deals row or the game page. Adds ITAD's prices at
+ *           every store, Steam's review summary, and ITAD's 24-hour and
+ *           all-time player peaks.
  *   "card"  A Wishlist card coming into view. No ITAD store prices; the card
  *           already shows its lows.
  *
@@ -38,6 +41,7 @@ import {
   getAppStoreMeta,
   getCurrentPlayers,
   getItadAppPrices,
+  getItadPlayers,
   getSteamTags,
   type AppDetails,
   type EndpointContext,
@@ -47,7 +51,20 @@ import { DEFAULT_COUNTRY_CODE, appIdSchema } from "@/lib/validation";
 
 export type InsightsMode = "full" | "card";
 
-export type InsightsSection = "players" | "metadata" | "genres" | "prices" | "reviews";
+export type InsightsSection = "players" | "metadata" | "genres" | "prices" | "reviews" | "playerPeaks";
+
+/**
+ * IsThereAnyDeal's player peaks for one game, tracked from Steam (v1.12).
+ * A field is null when ITAD has no figure for it (common for niche games).
+ * Counts only: ITAD's player stats carry no dates, so no peak date is shown
+ * (the v1.12.1 date from our own recordings was removed in v1.12.2).
+ */
+export interface PlayerPeaks {
+  /** Highest concurrent players in the last 24 hours (ITAD `players.day`). */
+  readonly day: number | null;
+  /** Highest concurrent players ITAD has seen (ITAD `players.peak`). */
+  readonly allTime: number | null;
+}
 
 export interface GameInsights {
   readonly appid: number;
@@ -73,6 +90,12 @@ export interface GameInsights {
    * Only in "full" mode (v1.11); null in "card" mode or when Steam has none.
    */
   readonly reviews: ReviewSummary | null;
+  /**
+   * ITAD's player peaks. Only in "full" mode with an ITAD key; null in "card"
+   * mode, without a key, or when ITAD could not be asked (then "playerPeaks"
+   * is in `unavailable`). Never estimated.
+   */
+  readonly playerPeaks: PlayerPeaks | null;
   /** Sections that could not be loaded this time (shown as "unavailable"). */
   readonly unavailable: readonly InsightsSection[];
 }
@@ -107,8 +130,9 @@ export async function buildGameInsights(
   const wantPrices = mode === "full" && isItadConfigured();
 
   const wantReviews = mode === "full";
+  const wantPeaks = mode === "full" && isItadConfigured();
 
-  const [players, meta, tags, details, prices, reviews] = await Promise.allSettled([
+  const [players, meta, tags, details, prices, reviews, peaks] = await Promise.allSettled([
     getCurrentPlayers(id, context),
     getAppStoreMeta(id, cc, context),
     getSteamTags(context),
@@ -116,6 +140,8 @@ export async function buildGameInsights(
     wantPrices ? getItadAppPrices(id, cc, context) : Promise.resolve(null),
     // Cached per app for 3 days and shared with the Deals review fill-in.
     wantReviews ? getAppReviews(id, context) : Promise.resolve(null),
+    // ITAD player stats, cached per app for an hour and shared by everyone.
+    wantPeaks ? getItadPlayers(id, context) : Promise.resolve(null),
   ]);
 
   const unavailable: InsightsSection[] = [];
@@ -137,6 +163,10 @@ export async function buildGameInsights(
   if (details.status === "rejected") unavailable.push("genres");
   const priceData = wantPrices ? ok(prices, "prices") : null;
   const reviewData = wantReviews ? ok(reviews, "reviews") : null;
+  // ITAD answered: its figures, or N/A for a game it has no counts for.
+  const peakData = wantPeaks ? ok(peaks, "playerPeaks") : null;
+  const playerPeaks: PlayerPeaks | null =
+    wantPeaks && peaks.status === "fulfilled" ? { day: peakData?.day ?? null, allTime: peakData?.peak ?? null } : null;
 
   const meta0: CacheMeta =
     metas.length > 0
@@ -166,6 +196,7 @@ export async function buildGameInsights(
           : null,
       prices: priceData,
       reviews: reviewData,
+      playerPeaks,
       unavailable,
     },
     meta: { ...meta0, stale: metas.some((m) => m.stale) },
