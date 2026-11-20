@@ -6,6 +6,7 @@
  *
  *   insightsQuery(appid, mode)   GET /api/apps/[appid]/insights?mode=...
  *   historyQuery(appid)          GET /api/wishlist/[appid]/history
+ *                                key ["price-history", appid] (v1.14.1)
  *
  * Users: the expanded Deals row, Wishlist cards, the game page, and the hover
  * prefetch below.
@@ -35,6 +36,7 @@ import { useCallback, useEffect, useRef, type FocusEvent, type PointerEvent } fr
 import { apiGet } from "@/lib/api/client";
 import type { GameInsights, InsightsMode } from "@/lib/game-insights";
 import type { PriceHistory } from "@/lib/price-history";
+import type { CachedResult } from "@/lib/steam/cached-fetch";
 import { PREFETCH_HEADER } from "@/lib/prefetch-header";
 
 // =============================================================================
@@ -47,7 +49,26 @@ export const HISTORY_STALE_MS = 10 * 60_000;
 
 export const insightsQueryKey = (appid: number, mode: InsightsMode) =>
   ["app", "insights", appid, mode] as const;
-export const historyQueryKey = (appid: number) => ["wishlist", "history", appid] as const;
+/**
+ * One cache entry per game for every view (Deals dropdown, game page,
+ * Wishlist card). It used to start with "wishlist", so invalidating the
+ * wishlist also threw away every loaded history (v1.14.1).
+ */
+export const historyQueryKey = (appid: number) => ["price-history", appid] as const;
+
+/**
+ * When the server could not read IsThereAnyDeal and sent SteamGauge's short
+ * record as a stand-in (`pendingFullHistory`, v1.14.1), ask again this often,
+ * this many times. 4 × 5 s outlasts the server's 15-second fetch lease, so a
+ * request that found the history "busy" picks up the finished result.
+ */
+export const HISTORY_RECHECK_MS = 5_000;
+export const HISTORY_RECHECK_LIMIT = 4;
+
+/** True for an answer that is only standing in for the full history. */
+export function isHistoryPending(result: CachedResult<PriceHistory> | undefined): boolean {
+  return result?.status === "ok" && result.data.pendingFullHistory === true;
+}
 
 const insightsPath = (appid: number, mode: InsightsMode) => `/api/apps/${appid}/insights?mode=${mode}`;
 const historyPath = (appid: number) => `/api/wishlist/${appid}/history`;
@@ -62,11 +83,21 @@ export function insightsQuery(appid: number, mode: InsightsMode) {
   } as const;
 }
 
+interface HistoryQueryState {
+  readonly state: { readonly data: CachedResult<PriceHistory> | undefined; readonly dataUpdateCount: number };
+}
+
 export function historyQuery(appid: number) {
   return {
     queryKey: historyQueryKey(appid),
     queryFn: ({ signal }: { signal: AbortSignal }) => apiGet<PriceHistory>(historyPath(appid), signal),
-    staleTime: HISTORY_STALE_MS,
+    // A stand-in is never fresh, so reopening the dropdown or the game page
+    // asks again even after the rechecks below have run out.
+    staleTime: (query: HistoryQueryState) => (isHistoryPending(query.state.data) ? 0 : HISTORY_STALE_MS),
+    refetchInterval: (query: HistoryQueryState) =>
+      isHistoryPending(query.state.data) && query.state.dataUpdateCount <= HISTORY_RECHECK_LIMIT
+        ? HISTORY_RECHECK_MS
+        : false,
     retry: false,
   } as const;
 }
@@ -111,11 +142,15 @@ function prefetchFn<T>(queryClient: QueryClient, queryKey: readonly unknown[], p
   };
 }
 
-/** True when the query has fresh data or is already loading. */
+/**
+ * True when the query has fresh data or is already loading. A history
+ * stand-in (`pendingFullHistory`) never counts as fresh.
+ */
 function isCoveredFor(queryClient: QueryClient, queryKey: readonly unknown[], staleMs: number): boolean {
   const state = queryClient.getQueryState(queryKey);
   if (!state) return false;
   if (state.fetchStatus === "fetching") return true;
+  if (isHistoryPending(state.data as CachedResult<PriceHistory> | undefined)) return false;
   return state.status === "success" && Date.now() - state.dataUpdatedAt < staleMs;
 }
 

@@ -31,6 +31,12 @@ import { getSupabaseAdmin } from "@/lib/supabase/server";
  */
 export const STATE_COOKIE = "__Host-steam_openid_state";
 export const SESSION_COOKIE = "__Host-session";
+/**
+ * Where to go after signing in (v1.13): set by the login route from a
+ * checked `?next=`, read and cleared by the callback. Same lifetime as the
+ * OpenID state.
+ */
+export const RETURN_COOKIE = "__Host-steam_return";
 
 /** The user has this long to finish signing in on Steam. */
 export const STATE_TTL_SECONDS = 10 * 60;
@@ -46,10 +52,16 @@ export const OPENID_IDENTIFIER_SELECT = "http://specs.openid.net/auth/2.0/identi
 export const POST_LOGIN_PATH = "/dashboard";
 
 /**
- * The public landing page. Signed-out visitors, sign-outs, and failed
- * sign-ins (with ?auth_error=<code>) are all sent here.
+ * The home view (v1.14): Deals, public to everyone. Opening "/" redirects
+ * here, signed in or not.
  */
-export const SIGNED_OUT_PATH = "/";
+export const HOME_PATH = "/deals";
+
+/**
+ * Where sign-outs and failed sign-ins (with ?auth_error=<code>) are sent.
+ * The home view, directly, so there is no extra redirect through "/".
+ */
+export const SIGNED_OUT_PATH = HOME_PATH;
 
 /** Inbound limit for auth endpoints: 10 requests per minute per IP (doc 6.4). */
 const AUTH_RATE_LIMIT_PER_MINUTE = 10;
@@ -150,6 +162,15 @@ function clientIp(request: NextRequest): string {
 }
 
 /**
+ * A keyed hash of the client's IP address (32 hex). Used in rate-limit
+ * bucket names, so `rate_buckets` never holds an address and the tag cannot
+ * be reversed without SESSION_SECRET.
+ */
+export function clientIpTag(request: NextRequest): string {
+  return createHmac("sha256", getSessionSecret()).update(clientIp(request), "utf8").digest("hex").slice(0, 32);
+}
+
+/**
  * Charges one request to this IP's per-minute auth budget.
  *
  * @returns true if the request may proceed, false if the limit is reached.
@@ -158,10 +179,7 @@ function clientIp(request: NextRequest): string {
  */
 export async function allowAuthRequest(request: NextRequest): Promise<boolean> {
   // Keyed hash: the bucket name cannot be reversed to an IP address.
-  const ipTag = createHmac("sha256", getSessionSecret())
-    .update(clientIp(request), "utf8")
-    .digest("hex")
-    .slice(0, 32);
+  const ipTag = clientIpTag(request);
 
   const windowStart = new Date(Math.floor(Date.now() / 60_000) * 60_000).toISOString();
 

@@ -1,7 +1,7 @@
 /**
  * components/footer.tsx
  *
- * The site footer, on the sign-in page and on every signed-in page.
+ * The site footer, on every app page (rendered once by the app shell).
  *
  *   Made for MIS325.
  *   SteamGauge is not affiliated with Valve. Powered by Steam.

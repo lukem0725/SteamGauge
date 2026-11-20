@@ -33,6 +33,15 @@ export { PREFETCH_HEADER };
 /** Hover prefetches per user per minute. A slow sweep down a 50-row page fits. */
 export const PREFETCH_PER_MINUTE = 120;
 
+/** Hover prefetches per minute: per user, or per IP for signed-out visitors (v1.13). */
+export const PREFETCH_LIMIT = { signedIn: PREFETCH_PER_MINUTE, anonymous: 60 } as const;
+
+/**
+ * Game facts and price history requests per IP per minute for signed-out
+ * visitors (v1.13). Signed-in users are not limited here, as before.
+ */
+export const PUBLIC_GAME_LIMIT = { signedIn: 0, anonymous: 60 } as const;
+
 export function isPrefetch(request: NextRequest): boolean {
   return request.headers.get(PREFETCH_HEADER) === "1";
 }

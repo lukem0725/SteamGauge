@@ -19,10 +19,13 @@
 import { randomBytes } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { safeReturnPath } from "@/lib/auth/sign-in-link";
+
 import {
   CALLBACK_PATH,
   OPENID_NS,
   POST_LOGIN_PATH,
+  RETURN_COOKIE,
   SIGNED_OUT_PATH,
   SESSION_COOKIE,
   SESSION_TTL_SECONDS,
@@ -210,7 +213,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     }
 
     // ---- 7. Hand the browser its session and send it home ------------------
-    const response = NextResponse.redirect(new URL(POST_LOGIN_PATH, origin), 303);
+    // Back to the page the visitor signed in from (checked again), else the dashboard.
+    const target = safeReturnPath(request.cookies.get(RETURN_COOKIE)?.value) ?? POST_LOGIN_PATH;
+    const response = NextResponse.redirect(new URL(target, origin), 303);
     response.cookies.set(SESSION_COOKIE, sessionToken, authCookieOptions(SESSION_TTL_SECONDS));
     clearStateCookie(response);
     return noStore(response);
@@ -314,6 +319,7 @@ function failureRedirect(origin: string, code: FailureCode): NextResponse {
 
 function clearStateCookie(response: NextResponse): void {
   response.cookies.set(STATE_COOKIE, "", authCookieOptions(0));
+  response.cookies.set(RETURN_COOKIE, "", authCookieOptions(0));
 }
 
 function noStore(response: NextResponse): NextResponse {

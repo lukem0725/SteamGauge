@@ -22,7 +22,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { PriceHistoryChart, formatDay } from "@/components/price-history-chart";
-import { historyQuery, insightsQuery } from "@/components/game-queries";
+import { HISTORY_RECHECK_LIMIT, historyQuery, insightsQuery } from "@/components/game-queries";
 import { formatMoney, useInViewOnce } from "@/components/ui-kit";
 import type { GameInsights, InsightsMode } from "@/lib/game-insights";
 import type { PriceHistory } from "@/lib/price-history";
@@ -83,11 +83,53 @@ export function PriceHistoryPanel({
         <p className="mt-2 text-sm text-slate-500">Price history could not be loaded.</p>
       ) : (
         <>
+          {data.pendingFullHistory ? (
+            <PendingHistoryNote
+              givenUp={history.dataUpdateCount > HISTORY_RECHECK_LIMIT && !history.isFetching}
+              onRetry={() => void history.refetch()}
+            />
+          ) : null}
           <LowStatusLine history={data} />
           <div className="mt-3">
             <PriceHistoryChart history={data} />
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Shown while the chart holds SteamGauge's own short record in place of
+ * IsThereAnyDeal's full history (v1.14.1), so a few days of data is never
+ * mistaken for the whole history. The query asks again by itself
+ * (components/game-queries.ts); once it stops, the visitor can retry.
+ */
+function PendingHistoryNote({ givenUp, onRetry }: { givenUp: boolean; onRetry: () => void }) {
+  return (
+    <div
+      role="status"
+      className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-slate-700/80 bg-slate-900/60 px-3 py-2 text-sm text-slate-300"
+    >
+      {givenUp ? (
+        <>
+          <span>
+            Full price history couldn&rsquo;t be loaded from IsThereAnyDeal just now. Showing
+            SteamGauge&rsquo;s own record.
+          </span>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="min-h-8 rounded-md px-2 font-medium text-steam-300 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400"
+          >
+            Try again
+          </button>
+        </>
+      ) : (
+        <span className="flex items-center gap-2">
+          <span aria-hidden="true" className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-steam-400" />
+          Loading full price history from IsThereAnyDeal. Showing SteamGauge&rsquo;s own record for now.
+        </span>
       )}
     </div>
   );

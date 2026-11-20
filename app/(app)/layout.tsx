@@ -1,20 +1,25 @@
 /**
  * app/(app)/layout.tsx
  *
- * The shell around every signed-in page (/dashboard, /deals, /wishlist):
- * dark page surface, navigation and the site footer. The TanStack Query client comes from
- * <Providers> in app/layout.tsx, which wraps this whole shell, so the global
- * search in the navigation and every page share one client.
+ * The shell around every app page (/dashboard, /deals, /wishlist, /search,
+ * /game/[appid]): dark page surface, navigation and the site footer. The
+ * TanStack Query client comes from <Providers> in app/layout.tsx, which wraps
+ * this whole shell, so the global search in the navigation and every page
+ * share one client.
  *
- * It does not check the session. Each page does that itself, because a
- * layout is not re-rendered on every navigation and must not be the only
- * thing standing between a visitor and private data.
+ * Since v1.13 it reads the session (shared with the page through
+ * getCurrentUser's per-request cache) only to show the account area in the
+ * navigation: avatar and name, or "Sign in with Steam". It is never the
+ * access check: a layout is not re-rendered on every navigation, so each
+ * page decides for itself what a signed-out visitor sees, and every
+ * user-only API route checks the session again.
  */
 import type { Viewport } from "next";
 import type { ReactNode } from "react";
 
 import { AppNav } from "@/components/app-nav";
 import { SiteFooter } from "@/components/footer";
+import { getCurrentUser } from "@/lib/auth/current-user";
 
 /** Dark browser chrome and form controls to match the page. */
 export const viewport: Viewport = {
@@ -22,7 +27,10 @@ export const viewport: Viewport = {
   themeColor: "#0b0e14",
 };
 
-export default function AppLayout({ children }: { children: ReactNode }) {
+export default async function AppLayout({ children }: { children: ReactNode }) {
+  // A database failure here must not take every page down: show "Sign in".
+  const user = await getCurrentUser().catch(() => null);
+
   return (
     <div className="flex min-h-dvh flex-col bg-page text-slate-100 antialiased">
       <a
@@ -32,7 +40,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         Skip to content
       </a>
 
-      <AppNav />
+      <AppNav user={user ? { personaName: user.personaName, avatarUrl: user.avatarUrl } : null} />
 
       {/* The page grows so the footer sits at the bottom of short pages. */}
       <div id="main-content" tabIndex={-1} className="flex-1 focus:outline-none">

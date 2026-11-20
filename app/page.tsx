@@ -1,108 +1,33 @@
 /**
- * /  (landing page)
+ * /  (v1.14)
  *
- * Signed-in visitors are sent straight to the dashboard. Everyone else sees
- * the sign-in screen, including the reason if a sign-in just failed
- * (?auth_error=<code>, set by the auth routes).
+ * Opening SteamGauge lands on Deals, signed in or not: this route only
+ * redirects to /deals. It reads no cookie and makes no database call, so it
+ * cannot fail and never shows a sign-in wall.
  *
- * Requires Next.js 15 or later (async `cookies` and `searchParams`).
+ * Redirecting (rather than rendering Deals here too) keeps one address for
+ * the view, so the Deals tab is highlighted, bookmarks and sign-in return
+ * paths agree, and the browser's history holds a single entry. The redirect
+ * is temporary (307) so the home page can change later without browsers
+ * having cached it.
+ *
+ * Older links to /?auth_error=<code> keep working: a known code is carried
+ * over, anything else becomes server_error (lib/auth/auth-errors.ts).
  */
-import type { Metadata, Viewport } from "next";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
-import { SiteFooter } from "@/components/footer";
-import { getSessionUser } from "@/lib/auth/session";
-import { POST_LOGIN_PATH, SESSION_COOKIE } from "@/lib/auth/shared";
+import { authErrorCode } from "@/lib/auth/auth-errors";
+import { HOME_PATH } from "@/lib/auth/shared";
 
-export const metadata: Metadata = {
-  title: "SteamGauge",
-  description: "See your Steam library, backlog, deals and price drops at a glance.",
-};
-
-export const viewport: Viewport = { colorScheme: "dark", themeColor: "#0b0e14" };
-
-// Depends on a cookie: never prerender or cache this page.
+// Reads the query string: never prerender.
 export const dynamic = "force-dynamic";
 
-/** Codes the auth routes send. Anything else gets the generic message. */
-const AUTH_ERRORS: Readonly<Record<string, string>> = {
-  cancelled: "Sign-in was cancelled. You can try again whenever you are ready.",
-  invalid_state: "That sign-in attempt expired or was started in another tab. Please try again.",
-  verification_failed: "Steam could not confirm that sign-in. Please try again.",
-  rate_limited: "Too many sign-in attempts. Wait a minute, then try again.",
-  server_error: "We could not finish signing you in. Please try again in a moment.",
-};
-
-export default async function LandingPage({
+export default async function RootPage({
   searchParams,
 }: {
   searchParams: Promise<{ auth_error?: string | string[] }>;
-}) {
-  if (await isSignedIn()) {
-    redirect(POST_LOGIN_PATH);
-  }
-
+}): Promise<never> {
   const { auth_error: raw } = await searchParams;
-  const code = Array.isArray(raw) ? raw[0] : raw;
-  // The code comes from the URL, so it only ever selects one of our own messages.
-  const authError = code
-    ? (Object.prototype.hasOwnProperty.call(AUTH_ERRORS, code)
-        ? AUTH_ERRORS[code]
-        : AUTH_ERRORS.server_error)
-    : null;
-
-  return (
-    <div className="flex min-h-dvh flex-col bg-page text-slate-100 antialiased">
-      <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-12">
-        <p className="text-2xl font-semibold tracking-tight text-slate-50">
-          Steam<span className="text-steam-400">Gauge</span>
-        </p>
-        <h1 className="mt-6 text-3xl font-semibold leading-tight tracking-tight text-slate-50">
-          Your Steam library, at a glance.
-        </h1>
-        <p className="mt-3 text-base leading-relaxed text-slate-400">
-          See what you own and what you have never played, find deals worth the money, and
-          watch games for a price drop.
-        </p>
-
-        {authError ? (
-          <p
-            role="alert"
-            className="mt-6 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm leading-relaxed text-rose-200"
-          >
-            {authError}
-          </p>
-        ) : null}
-
-        {/* A plain link on purpose: next/link would prefetch the login route
-            and replace the sign-in state cookie mid-flow. */}
-        <a
-          href="/api/auth/steam/login"
-          className="mt-6 inline-flex min-h-12 items-center justify-center rounded-xl bg-steam-400 px-5 text-base font-semibold text-slate-950 transition-colors hover:bg-steam-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-200"
-        >
-          Sign in through Steam
-        </a>
-        <p className="mt-3 text-sm leading-relaxed text-slate-500">
-          You sign in on Steam&rsquo;s own site. SteamGauge never sees your password.
-        </p>
-      </main>
-
-      <SiteFooter />
-    </div>
-  );
-}
-
-/**
- * A database outage must not turn the landing page into an error screen, so
- * a failed lookup is treated as signed out here. The dashboard's own check
- * still applies after sign-in.
- */
-async function isSignedIn(): Promise<boolean> {
-  try {
-    const cookieStore = await cookies();
-    return (await getSessionUser(cookieStore.get(SESSION_COOKIE)?.value)) !== null;
-  } catch {
-    return false;
-  }
+  const code = authErrorCode(raw);
+  redirect(code ? `${HOME_PATH}?auth_error=${code}` : HOME_PATH);
 }

@@ -54,16 +54,19 @@ export const SALE_PAGES = 5;
  *         library, wishlist or watchlist data only removes those flags.
  */
 export async function buildDeals(
-  session: { readonly steamid: string },
+  session: { readonly steamid: string } | null,
   context: Pick<EndpointContext, "waitUntil"> = {},
 ): Promise<CachedResult<DealsPayload>> {
   const ctx: EndpointContext = { session, waitUntil: context.waitUntil };
 
+  // Signed out (v1.13): the same deal list, with no personal lookups at all.
   const [pages, owned, wishlist, watched] = await Promise.all([
     loadDealPages(ctx),
-    loadOwned(session.steamid, ctx),
-    loadSteamWishlist(session.steamid, ctx),
-    loadWatched(session.steamid),
+    session ? loadOwned(session.steamid, ctx) : Promise.resolve(null),
+    session
+      ? loadSteamWishlist(session.steamid, ctx)
+      : Promise.resolve({ status: "signed_out" as const, appids: new Set<number>() }),
+    session ? loadWatched(session.steamid) : Promise.resolve(new Set<number>()),
   ]);
 
   const seen = new Set<number>();
@@ -104,6 +107,7 @@ export async function buildDeals(
       lowsAvailable: pages.lowsAvailable,
       ownershipKnown: owned !== null,
       steamWishlist: wishlist.status,
+      personal: session !== null,
       missingStoreData: pages.missingStoreData,
       partial: pages.partial,
       reviewsPending: reviews.pending,

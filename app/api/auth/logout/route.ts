@@ -2,7 +2,7 @@
  * POST /api/auth/logout
  *
  * Ends the session: deletes its row from `sessions`, clears the
- * `__Host-session` cookie, and sends the browser to the landing page.
+ * `__Host-session` cookie, and sends the browser to the home view, /deals (v1.14).
  *
  * POST only, and only from our own origin, so another site cannot sign a
  * user out by linking or posting here. Called by the plain HTML form in the

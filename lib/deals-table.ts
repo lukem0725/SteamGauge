@@ -42,8 +42,16 @@ export interface DealsPayload {
   /** False without IsThereAnyDeal data: no badges, so the deal status filter is off. */
   readonly lowsAvailable: boolean;
   readonly ownershipKnown: boolean;
-  /** "empty_or_private" or "unavailable" when the Steam wishlist could not be read. */
-  readonly steamWishlist: "ok" | "empty_or_private" | "unavailable";
+  /**
+   * "empty_or_private" or "unavailable" when the Steam wishlist could not be
+   * read; "signed_out" for a visitor without a session (v1.13).
+   */
+  readonly steamWishlist: "ok" | "empty_or_private" | "unavailable" | "signed_out";
+  /**
+   * False for a signed-out visitor (v1.13): no owned, wished or watched flags,
+   * so the personal filters and Watch buttons are replaced by sign-in prompts.
+   */
+  readonly personal: boolean;
   /** Rows with no Steam rating or release data (shown with a dash). */
   readonly missingStoreData: number;
   /** True when some deal pages could not be loaded and the list is shorter. */

@@ -67,6 +67,12 @@ export interface PriceHistory {
   /** The current store price used for the comparison, if there is one. */
   readonly currentFinal: number | null;
   readonly lowStatus: LowStatus;
+  /**
+   * Set (v1.14.1) only when IsThereAnyDeal has this game's full history but
+   * could not be read just now, so these points are SteamGauge's own short
+   * record standing in. Never cached; the browser asks again.
+   */
+  readonly pendingFullHistory?: true;
 }
 
 // =============================================================================

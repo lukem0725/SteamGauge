@@ -39,11 +39,16 @@ import {
   secondaryButton,
 } from "@/components/ui-kit";
 import { apiGet, apiSend } from "@/lib/api/client";
+import { signInHref } from "@/lib/auth/sign-in-link";
 import type { GameInsights } from "@/lib/game-insights";
 import type { AppDetails } from "@/lib/steam/endpoints";
 import type { ReviewSummary } from "@/lib/steam/reviews";
 
-export function GameView({ appid }: { appid: number }) {
+/**
+ * @param signedIn  False for a signed-out visitor (v1.13): the page is the
+ *                  same, but "Watch" becomes "Sign in to watch".
+ */
+export function GameView({ appid, signedIn = true }: { appid: number; signedIn?: boolean }) {
   const details = useQuery({
     queryKey: ["app", "details", appid],
     queryFn: ({ signal }) => apiGet<AppDetails>(`/api/apps/${appid}`, signal),
@@ -90,6 +95,7 @@ export function GameView({ appid }: { appid: number }) {
           <>
             <GameHeader
               app={app}
+              signedIn={signedIn}
               players={insights.data?.status === "ok" ? insights.data.data.players : null}
               playersState={
                 insights.isPending
@@ -150,12 +156,14 @@ export function GameView({ appid }: { appid: number }) {
 
 function GameHeader({
   app,
+  signedIn,
   players,
   playersState,
   reviews,
   reviewState,
 }: {
   app: AppDetails;
+  signedIn: boolean;
   players: GameInsights["players"];
   playersState: FigureState;
   reviews: ReviewSummary | null;
@@ -203,7 +211,14 @@ function GameHeader({
                 View on Steam
                 <span className="sr-only"> (opens in a new tab)</span>
               </a>
-              <WatchButton appid={app.appid} name={app.name} />
+              {signedIn ? (
+                <WatchButton appid={app.appid} name={app.name} />
+              ) : (
+                <a href={signInHref(`/game/${app.appid}`)} className={secondaryButton}>
+                  Sign in to watch
+                  <span className="sr-only"> {app.name} with your Steam account</span>
+                </a>
+              )}
             </div>
           </div>
         </div>

@@ -16,6 +16,7 @@
  * "/" anywhere outside a text field jumps to the box.
  */
 import { useQuery } from "@tanstack/react-query";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   useEffect,
@@ -236,9 +237,19 @@ export function GlobalSearch() {
               {status}
             </p>
           ) : (
-            <p className="hidden border-t border-slate-800 px-4 py-2 text-[11px] text-slate-500 sm:block" aria-hidden="true">
-              ↑ ↓ to choose · Enter to open · Esc to close
-            </p>
+            <div className="flex items-center justify-between gap-3 border-t border-slate-800 px-4 py-2 text-[11px] text-slate-500">
+              <span className="hidden sm:block" aria-hidden="true">
+                ↑ ↓ to choose · Enter to open · Esc to close
+              </span>
+              {/* v1.13: the same results on their own page, which also works signed out. */}
+              <Link
+                href={`/search?q=${encodeURIComponent(term)}`}
+                onClick={() => setOpen(false)}
+                className="ml-auto font-medium text-steam-300 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400"
+              >
+                See all results
+              </Link>
+            </div>
           )}
         </div>
       ) : null}

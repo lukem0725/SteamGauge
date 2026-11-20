@@ -60,6 +60,7 @@ import { pageContainer } from "@/components/layout-width";
 import { TitleFilter } from "@/components/title-filter";
 import { apiGet, apiSend } from "@/lib/api/client";
 import type { SessionUser } from "@/lib/auth/session";
+import { signInHref } from "@/lib/auth/sign-in-link";
 import {
   DEFAULT_FILTERS,
   DEFAULT_SORT,
@@ -87,18 +88,27 @@ const STALE_RECHECK_MS = 4_000;
 // =============================================================================
 
 export interface DealsViewProps {
-  /** The verified session user, from the Server Component. */
-  readonly user: SessionUser;
+  /**
+   * The verified session user, from the Server Component, or null for a
+   * signed-out visitor (v1.13): the same deals, without personal flags,
+   * filters or Watch buttons.
+   */
+  readonly user: SessionUser | null;
+  /**
+   * Rendered from the server between the header and the table, for example
+   * why the last sign-in failed (v1.14). Nothing when absent.
+   */
+  readonly notice?: ReactNode;
 }
 
-export function DealsView({ user }: DealsViewProps) {
-  return <Deals user={user} />;
+export function DealsView({ user, notice = null }: DealsViewProps) {
+  return <Deals user={user} notice={notice} />;
 }
 
-function Deals({ user }: DealsViewProps) {
+function Deals({ user, notice }: DealsViewProps) {
   const deals = useQuery({
     // Keyed by user: owned, wished and watched flags are personal.
-    queryKey: ["deals", user.steamid],
+    queryKey: ["deals", user?.steamid ?? "signed-out"],
     queryFn: ({ signal }) => apiGet<DealsPayload>("/api/deals", signal),
     staleTime: 5 * 60_000,
     // Bounded follow-up after a stale answer, not polling (doc 4.1).
@@ -130,6 +140,8 @@ function Deals({ user }: DealsViewProps) {
           </div>
         </header>
 
+        {notice}
+
         <main className="mt-6">
           {deals.isPending ? (
             <DealsSkeleton />
@@ -147,7 +159,7 @@ function Deals({ user }: DealsViewProps) {
           ) : (
             <DealsExplorer
               payload={payload}
-              steamid={user.steamid}
+              steamid={user?.steamid ?? null}
               onRefresh={() => void deals.refetch()}
               refreshing={deals.isFetching}
             />
@@ -194,7 +206,7 @@ function DealsExplorer({
   refreshing,
 }: {
   payload: DealsPayload;
-  steamid: string;
+  steamid: string | null;
   onRefresh: () => void;
   refreshing: boolean;
 }) {
@@ -340,7 +352,9 @@ function FilterPanel({
       </Fieldset>
 
       <Fieldset legend="Owned games">
-        {!payload.ownershipKnown ? (
+        {!payload.personal ? (
+          <SignInHint>to filter by the games you own.</SignInHint>
+        ) : !payload.ownershipKnown ? (
           <p className="mb-2 text-xs leading-relaxed text-slate-500">
             Your library is private, so ownership is unknown.
           </p>
@@ -348,7 +362,7 @@ function FilterPanel({
         <RadioGroup
           name={`${idPrefix}-owned`}
           value={filters.owned}
-          disabled={!payload.ownershipKnown}
+          disabled={!payload.personal || !payload.ownershipKnown}
           onChange={(owned) => update({ owned })}
           options={[
             { value: "include", label: "Include" },
@@ -364,7 +378,8 @@ function FilterPanel({
           checked={filters.wishedOnly}
           onChange={(wishedOnly) => update({ wishedOnly })}
           label="Only my wishlist"
-          hint="Steam wishlist or SteamGauge watchlist"
+          hint={payload.personal ? "Steam wishlist or SteamGauge watchlist" : "Sign in with Steam to use your wishlist"}
+          disabled={!payload.personal}
         />
         <Checkbox
           id={`${idPrefix}-games`}
@@ -489,22 +504,25 @@ function Checkbox({
   onChange,
   label,
   hint,
+  disabled = false,
 }: {
   id: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
   hint?: string;
+  disabled?: boolean;
 }) {
   return (
     <label
       htmlFor={id}
-      className="flex min-h-9 cursor-pointer items-start gap-2.5 rounded-lg px-1.5 py-1.5 hover:bg-slate-800/60"
+      className={`flex min-h-9 items-start gap-2.5 rounded-lg px-1.5 py-1.5 ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-slate-800/60"}`}
     >
       <input
         id={id}
         type="checkbox"
-        checked={checked}
+        disabled={disabled}
+        checked={checked && !disabled}
         onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.checked)}
         className="mt-0.5 h-4 w-4 shrink-0 accent-steam-400"
       />
@@ -812,6 +830,18 @@ function Footnotes({
   );
 }
 
+/** "Sign in with Steam to …" with the link, for personal filters (v1.13). */
+function SignInHint({ children }: { children: ReactNode }) {
+  return (
+    <p className="mb-2 text-xs leading-relaxed text-slate-500">
+      <a href={signInHref("/deals")} className="font-medium text-steam-300 underline underline-offset-2 hover:text-steam-200">
+        Sign in with Steam
+      </a>{" "}
+      {children}
+    </p>
+  );
+}
+
 // -----------------------------------------------------------------------------
 // The table
 // -----------------------------------------------------------------------------
@@ -837,7 +867,7 @@ function DealsTable({
   rows: readonly DealRow[];
   sort: { key: SortKey; direction: SortDirection };
   onSort: (key: SortKey) => void;
-  steamid: string;
+  steamid: string | null;
 }) {
   // One clock for every row, ticking once a minute (sale end times), so a
   // re-render does not hand every row a new `now` and defeat memo().
@@ -954,7 +984,7 @@ const DealTableRow = memo(function DealTableRow({
   onToggle,
 }: {
   row: DealRow;
-  steamid: string;
+  steamid: string | null;
   now: number;
   open: boolean;
   onToggle: (appid: number) => void;
@@ -1308,12 +1338,26 @@ function SaleEnds({ iso, now }: { iso: string | null; now: number }) {
  * One-tap watch from the table. Steam-wishlisted and watched games link to the
  * wishlist page instead. Nothing is ever sent to Steam.
  */
-function WatchToggle({ row, steamid }: { row: DealRow; steamid: string }) {
+function WatchToggle({ row, steamid }: { row: DealRow; steamid: string | null }) {
   const queryClient = useQueryClient();
   const watch = useMutation({
     mutationFn: () => apiSend("POST", "/api/wishlist", { appid: row.appid }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["wishlist", steamid] }),
   });
+
+  if (!steamid) {
+    // Signed out (v1.13): watching needs an account, so offer to sign in and come back here.
+    return (
+      <a
+        href={signInHref("/deals")}
+        className="inline-flex min-h-9 items-center rounded-lg border border-slate-700 px-2.5 text-xs font-medium text-slate-300 transition-colors hover:border-steam-400/60 hover:bg-steam-400/10 hover:text-steam-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steam-400"
+        title="Sign in with Steam to watch games"
+      >
+        Watch
+        <span className="sr-only">: {row.name}. Sign in with Steam first</span>
+      </a>
+    );
+  }
 
   if (row.watched || row.wished || watch.isSuccess) {
     return (

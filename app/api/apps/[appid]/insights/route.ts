@@ -11,8 +11,9 @@
  *   mode=card   A Wishlist card: the same facts, genres included, without
  *               the store price list.
  *
- * Requires a session, so anonymous traffic cannot spend our quota. The data
- * is not personal, so the browser may reuse it for a minute.
+ * Public since v1.13 (lib/api/access.ts): the data is not personal.
+ * Signed-out visitors are limited per IP (PUBLIC_GAME_LIMIT) and use the
+ * lower "anonymous" quota tier on a cache miss.
  *
  * Requires Next.js 15.1 or later (`after`, async `params`).
  */
@@ -21,12 +22,13 @@ import { after, type NextRequest, type NextResponse } from "next/server";
 import {
   INSIGHTS_CDN,
   NO_SHARED_CACHE,
-  PREFETCH_PER_MINUTE,
+  PREFETCH_LIMIT,
+  PUBLIC_GAME_LIMIT,
   isPrefetch,
   sharedCacheControl,
 } from "@/lib/api/game-cache";
 import { errorResponse, failureResponse, resultResponse } from "@/lib/api/respond";
-import { takeUserQuota } from "@/lib/api/user-limit";
+import { takeVisitorQuota } from "@/lib/api/visitor-limit";
 import { getSessionUser } from "@/lib/auth/session";
 import { SESSION_COOKIE } from "@/lib/auth/shared";
 import { buildGameInsights } from "@/lib/game-insights";
@@ -41,8 +43,9 @@ export async function GET(
   { params }: { params: Promise<{ appid: string }> },
 ): Promise<NextResponse> {
   try {
+    // Public since v1.13 (game facts are the same for everyone). A session
+    // only raises limits and the quota tier on a cache miss.
     const session = await getSessionUser(request.cookies.get(SESSION_COOKIE)?.value);
-    if (!session) return errorResponse("auth_required", 401);
 
     const appid = appIdSchema.safeParse((await params).appid);
     if (!appid.success) return errorResponse("invalid_appid", 400);
@@ -53,8 +56,11 @@ export async function GET(
     // Hover prefetch (lib/api/game-cache.ts): limited per user, lower quota
     // tier, and refused rather than answered with degraded data.
     const prefetch = isPrefetch(request);
-    if (prefetch && !(await takeUserQuota(session.steamid, "prefetch", PREFETCH_PER_MINUTE))) {
+    if (prefetch && !(await takeVisitorQuota(request, session, "prefetch", PREFETCH_LIMIT))) {
       return errorResponse("prefetch_declined", 503);
+    }
+    if (!prefetch && !session && !(await takeVisitorQuota(request, null, "game", PUBLIC_GAME_LIMIT))) {
+      return errorResponse("rate_limited", 429, 30);
     }
 
     const result = await buildGameInsights(appid.data, modeParam, {

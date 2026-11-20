@@ -15,10 +15,12 @@
 import { randomBytes } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { safeReturnPath } from "@/lib/auth/sign-in-link";
 import {
   CALLBACK_PATH,
   OPENID_IDENTIFIER_SELECT,
   OPENID_NS,
+  RETURN_COOKIE,
   SIGNED_OUT_PATH,
   STATE_COOKIE,
   STATE_TTL_SECONDS,
@@ -62,6 +64,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     const response = NextResponse.redirect(steamUrl, 307);
     response.cookies.set(STATE_COOKIE, state, authCookieOptions(STATE_TTL_SECONDS));
+    // Where to land afterwards (v1.13): one of our own pages, or nothing.
+    const next = safeReturnPath(request.nextUrl.searchParams.get("next"));
+    response.cookies.set(RETURN_COOKIE, next ?? "", authCookieOptions(next ? STATE_TTL_SECONDS : 0));
     return noStore(response);
   } catch (err) {
     // Missing configuration or an unreachable database. There is no safe
